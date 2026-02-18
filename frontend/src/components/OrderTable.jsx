@@ -9,6 +9,7 @@ const DEFAULT_ORDER_COLUMN_WIDTHS = {
   status: 100,
   name: 150,
   description: 200,
+  shipping: 260,
   components: 300,
   payments: 200,
   debt: 100,
@@ -21,9 +22,34 @@ const ORDER_STATUS_BADGE_CLASS = {
   2: "wm-status-shipped",
 };
 
-export default function OrderTable({ orders, setOrders, token, exportToCSV, products = [], filter = '', statusFilter = '', setFilter = () => {} }) {
-  const [editingOrderId, setEditingOrderId] = useState(null);
-  const [newOrder, setNewOrder] = useState({
+function normalizeNumber(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  const cleaned = String(value).replace(/\s/g, "").replace(",", ".");
+  const n = Number(cleaned);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+function sumOrderComponentTotals(components = []) {
+  return (components || []).reduce(
+    (acc, component) => {
+      acc.price += normalizeNumber(component?.summaRubSoSkidkoj);
+      acc.weight += normalizeNumber(component?.weight);
+      return acc;
+    },
+    { price: 0, weight: 0 }
+  );
+}
+
+function getOrderPaymentStatus(order) {
+  const paidAmount = (order?.payments || []).reduce((sum, payment) => sum + normalizeNumber(payment?.amount), 0);
+  if (paidAmount <= 0) {
+    return "none";
+  }
+  return normalizeNumber(order?.debt) <= 0 ? "paid" : "partial";
+}
+
+function createEmptyOrder() {
+  return {
     id: null,
     components: [],
     quantity: 0,
@@ -32,7 +58,35 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
     description: '',
     payments: [{ method: '', amount: '', comment: '' }],
     debt: 0,
-  });
+    ship_date: '',
+    city: '',
+    full_name: '',
+    phone: '',
+    passport_inn: '',
+    tk: '',
+    places: '',
+    price: '',
+    weight: '',
+  };
+}
+
+function createShipmentDraftFromOrder(order = {}) {
+  return {
+    ship_date: order.ship_date || '',
+    city: order.city || '',
+    full_name: order.full_name || '',
+    phone: order.phone || '',
+    passport_inn: order.passport_inn || '',
+    tk: order.tk || '',
+    places: order.places ?? '',
+    price: order.price ?? '',
+    weight: order.weight ?? '',
+  };
+}
+
+export default function OrderTable({ orders, setOrders, setShipments = () => {}, token, username, exportToCSV, products = [], filter = '', statusFilter = '', setFilter = () => {} }) {
+  const [editingOrderId, setEditingOrderId] = useState(null);
+  const [newOrder, setNewOrder] = useState(createEmptyOrder());
   const [showAddForm, setShowAddForm] = useState(false);
   const [selectedProducts, setSelectedProducts] = useState([]);
   const [showOrderModal, setShowOrderModal] = useState(false);
@@ -41,9 +95,19 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
   const [originalSelectedProducts, setOriginalSelectedProducts] = useState([]);
   const [removedProductIds, setRemovedProductIds] = useState([]);
   const [paymentMethods, setPaymentMethods] = useState([]);
+  const [clients, setClients] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false); // Added for action loading state
+  const [shipmentModalOrder, setShipmentModalOrder] = useState(null);
+  const [shipmentDraft, setShipmentDraft] = useState(createShipmentDraftFromOrder());
+  const [shipmentShowSuggestions, setShipmentShowSuggestions] = useState(false);
+  const [shipmentActiveField, setShipmentActiveField] = useState(null);
+  const [orderShippingShowSuggestions, setOrderShippingShowSuggestions] = useState(false);
+  const [orderShippingActiveField, setOrderShippingActiveField] = useState(null);
+  const [orderPlacesManuallyEdited, setOrderPlacesManuallyEdited] = useState(false);
+  const [orderPriceManuallyEdited, setOrderPriceManuallyEdited] = useState(false);
+  const [orderWeightManuallyEdited, setOrderWeightManuallyEdited] = useState(false);
   const { columnWidths, setColumnWidths, handleResizeStart } = useResizableColumns(ORDER_COLUMNS_STORAGE_KEY, DEFAULT_ORDER_COLUMN_WIDTHS);
 
   const statusOptions = [
@@ -76,6 +140,23 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
   useEffect(() => {
     fetchPaymentMethods();
   }, [fetchPaymentMethods]);
+
+  useEffect(() => {
+    const fetchClients = async () => {
+      try {
+        const headers = { Authorization: token };
+        if (username) {
+          headers["X-Username"] = username;
+        }
+        const response = await axios.get('/api/clients', { headers });
+        setClients(response.data || []);
+      } catch {
+        setClients([]);
+      }
+    };
+
+    fetchClients();
+  }, [token, username]);
 
   const validateForm = () => {
     const effectiveSelectedProducts = selectedProducts.filter((id) => !removedProductIds.includes(id));
@@ -110,6 +191,15 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
       ...order,
       components: order.components || [],
       name: order.name || '',
+      ship_date: order.ship_date || '',
+      city: order.city || '',
+      full_name: order.full_name || '',
+      phone: order.phone || '',
+      passport_inn: order.passport_inn || '',
+      tk: order.tk || '',
+      places: order.places ?? '',
+      price: order.price ?? '',
+      weight: order.weight ?? '',
       payments: order.payments?.length > 0
         ? order.payments.map((p) => ({ id: p.id, method: p.method, amount: p.amount.toString(), comment: p.comment || '' }))
         : [{ method: '', amount: '', comment: '' }],
@@ -119,6 +209,11 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
     setSelectedProducts(orderProductIDs);
     setRemovedProductIds([]);
     setShowEditProducts(false);
+    setOrderShippingShowSuggestions(false);
+    setOrderShippingActiveField(null);
+    setOrderPlacesManuallyEdited(Boolean(order?.places));
+    setOrderPriceManuallyEdited(Boolean(order?.price));
+    setOrderWeightManuallyEdited(Boolean(order?.weight));
     setShowOrderModal(true);
     setShowAddForm(true);
   };
@@ -137,6 +232,15 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
         components: effectiveSelectedProducts.map((id) => products.find((p) => p.id === id)).filter(Boolean), // Ensure no undefined
         quantity: effectiveSelectedProducts.length,
         name: newOrder.name,
+        ship_date: newOrder.ship_date || '',
+        city: newOrder.city || '',
+        full_name: newOrder.full_name || '',
+        phone: newOrder.phone || '',
+        passport_inn: newOrder.passport_inn || '',
+        tk: newOrder.tk || '',
+        places: Math.trunc(normalizeNumber(newOrder.places)),
+        price: normalizeNumber(newOrder.price),
+        weight: normalizeNumber(newOrder.weight),
         payments: formattedPayments,
         debt: newOrder.debt,
       };
@@ -168,6 +272,15 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
         status: newOrder.status,
         name: newOrder.name,
         description: newOrder.description,
+        ship_date: newOrder.ship_date || '',
+        city: newOrder.city || '',
+        full_name: newOrder.full_name || '',
+        phone: newOrder.phone || '',
+        passport_inn: newOrder.passport_inn || '',
+        tk: newOrder.tk || '',
+        places: Math.trunc(normalizeNumber(newOrder.places)),
+        price: normalizeNumber(newOrder.price),
+        weight: normalizeNumber(newOrder.weight),
         payments: formattedPayments,
         debt: newOrder.debt,
       };
@@ -198,6 +311,182 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
     }
   };
 
+  const handleOpenShipmentModal = (order) => {
+    setShipmentModalOrder(order);
+    const defaultDate = order?.ship_date || new Date().toISOString().slice(0, 10);
+    const autoPlaces = (order?.components || []).length || order?.quantity || 0;
+    const autoTotals = sumOrderComponentTotals(order?.components || []);
+    setShipmentDraft({
+      ...createShipmentDraftFromOrder(order),
+      ship_date: defaultDate,
+      places: order?.places ?? autoPlaces ?? '',
+      price: autoTotals.price > 0 ? autoTotals.price : (order?.price ?? ''),
+      weight: autoTotals.weight > 0 ? autoTotals.weight : (order?.weight ?? ''),
+    });
+    setShipmentShowSuggestions(false);
+    setShipmentActiveField(null);
+  };
+
+  const handleCreateShipmentFromOrder = async () => {
+    if (!shipmentModalOrder) return;
+    if (!shipmentDraft.ship_date) {
+      setError('Дата отправки обязательна');
+      return;
+    }
+    if (!String(shipmentDraft.full_name || '').trim()) {
+      setError('Для создания отправки заполните ФИО в заказе');
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setError('');
+      const headers = { Authorization: token };
+      if (username) {
+        headers['X-Username'] = username;
+      }
+
+      const payload = {
+        ship_date: shipmentDraft.ship_date,
+        city: shipmentDraft.city || '',
+        full_name: shipmentDraft.full_name || '',
+        phone: shipmentDraft.phone || '',
+        passport_inn: shipmentDraft.passport_inn || '',
+        tk: shipmentDraft.tk || '',
+        places: Math.trunc(normalizeNumber(shipmentDraft.places)),
+        price: normalizeNumber(shipmentDraft.price),
+        weight: normalizeNumber(shipmentDraft.weight),
+      };
+
+      const res = await axios.post('/api/shipments', payload, { headers });
+      setShipments((prev) => [res.data, ...(prev || [])]);
+      setShipmentModalOrder(null);
+      setShipmentDraft(createShipmentDraftFromOrder());
+      setShipmentShowSuggestions(false);
+      setShipmentActiveField(null);
+    } catch (error) {
+      setError(error.response?.data?.error || 'Не удалось создать отправку из заказа');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const applyClientToShipmentDraft = useCallback((client, nameOverride) => {
+    setShipmentDraft((prev) => ({
+      ...prev,
+      city: client.city || '',
+      full_name: nameOverride || client.full_name || '',
+      phone: client.phone || '',
+      passport_inn: client.passport_number || '',
+      tk: client.tk || '',
+    }));
+  }, []);
+
+  const shipmentSuggestionsByName = useMemo(() => {
+    const rows = clients || [];
+    const needle = String(shipmentDraft.full_name || '').toLowerCase().trim();
+    if (!needle) return rows.slice(0, 8);
+    return rows
+      .filter((c) => String(c.full_name || '').toLowerCase().includes(needle))
+      .slice(0, 8);
+  }, [clients, shipmentDraft.full_name]);
+
+  const shipmentSuggestionsByPhone = useMemo(() => {
+    const rows = clients || [];
+    const needle = String(shipmentDraft.phone || '').toLowerCase().trim();
+    if (!needle) return rows.slice(0, 8);
+    return rows
+      .filter((c) => String(c.phone || '').toLowerCase().includes(needle))
+      .slice(0, 8);
+  }, [clients, shipmentDraft.phone]);
+
+  const shipmentSuggestionsByPassport = useMemo(() => {
+    const rows = clients || [];
+    const needle = String(shipmentDraft.passport_inn || '').toLowerCase().trim();
+    if (!needle) return rows.slice(0, 8);
+    return rows
+      .filter((c) => String(c.passport_number || '').toLowerCase().includes(needle))
+      .slice(0, 8);
+  }, [clients, shipmentDraft.passport_inn]);
+
+  const activeShipmentSuggestions = useMemo(() => {
+    if (!shipmentActiveField) return [];
+    if (shipmentActiveField === 'full_name') return shipmentSuggestionsByName;
+    if (shipmentActiveField === 'phone') return shipmentSuggestionsByPhone;
+    if (shipmentActiveField === 'passport_inn') return shipmentSuggestionsByPassport;
+    return [];
+  }, [shipmentActiveField, shipmentSuggestionsByName, shipmentSuggestionsByPhone, shipmentSuggestionsByPassport]);
+
+  const renderShipmentSuggestion = useCallback((client) => {
+    if (shipmentActiveField === 'phone') {
+      return (
+        <>
+          <div className="font-medium">{client.phone || 'Без телефона'}</div>
+          <div className="text-xs text-gray-500">
+            {client.full_name || 'Без ФИО'} · {client.city || 'Без города'}
+          </div>
+        </>
+      );
+    }
+    if (shipmentActiveField === 'passport_inn') {
+      return (
+        <>
+          <div className="font-medium">{client.passport_number || 'Без номера'}</div>
+          <div className="text-xs text-gray-500">
+            {client.full_name || 'Без ФИО'} · {client.city || 'Без города'}
+          </div>
+        </>
+      );
+    }
+    return (
+      <>
+        <div className="font-medium">{client.full_name}</div>
+        <div className="text-xs text-gray-500">
+          {client.city || 'Без города'} · {client.phone || 'Без телефона'}
+        </div>
+      </>
+    );
+  }, [shipmentActiveField]);
+
+  const handleShipmentDraftFullNameChange = useCallback((value) => {
+    setShipmentDraft((prev) => ({ ...prev, full_name: value }));
+    setShipmentActiveField('full_name');
+    setShipmentShowSuggestions(true);
+    const exact = (clients || []).find(
+      (c) => String(c.full_name || '').toLowerCase().trim() === value.toLowerCase().trim()
+    );
+    if (exact) {
+      applyClientToShipmentDraft(exact, exact.full_name);
+      setShipmentShowSuggestions(false);
+    }
+  }, [applyClientToShipmentDraft, clients]);
+
+  const handleShipmentDraftPhoneChange = useCallback((value) => {
+    setShipmentDraft((prev) => ({ ...prev, phone: value }));
+    setShipmentActiveField('phone');
+    setShipmentShowSuggestions(true);
+    const exact = (clients || []).find(
+      (c) => String(c.phone || '').toLowerCase().trim() === value.toLowerCase().trim()
+    );
+    if (exact) {
+      applyClientToShipmentDraft(exact, exact.full_name);
+      setShipmentShowSuggestions(false);
+    }
+  }, [applyClientToShipmentDraft, clients]);
+
+  const handleShipmentDraftPassportChange = useCallback((value) => {
+    setShipmentDraft((prev) => ({ ...prev, passport_inn: value }));
+    setShipmentActiveField('passport_inn');
+    setShipmentShowSuggestions(true);
+    const exact = (clients || []).find(
+      (c) => String(c.passport_number || '').toLowerCase().trim() === value.toLowerCase().trim()
+    );
+    if (exact) {
+      applyClientToShipmentDraft(exact, exact.full_name);
+      setShipmentShowSuggestions(false);
+    }
+  }, [applyClientToShipmentDraft, clients]);
+
   const resetForm = () => {
     setEditingOrderId(null);
     setShowOrderModal(false);
@@ -207,16 +496,12 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
     setOriginalSelectedProducts([]);
     setRemovedProductIds([]);
     setSelectedProducts([]);
-    setNewOrder({
-      id: null,
-      components: [],
-      quantity: 0,
-      status: 0,
-      name: '',
-      description: '',
-      payments: [{ method: '', amount: '', comment: '' }],
-      debt: 0,
-    });
+    setNewOrder(createEmptyOrder());
+    setOrderShippingShowSuggestions(false);
+    setOrderShippingActiveField(null);
+    setOrderPlacesManuallyEdited(false);
+    setOrderPriceManuallyEdited(false);
+    setOrderWeightManuallyEdited(false);
   };
 
   const handlePaymentChange = (index, field, value) => {
@@ -241,6 +526,122 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
     }
   };
 
+  const applyClientToOrder = useCallback((client, nameOverride) => {
+    setNewOrder((prev) => ({
+      ...prev,
+      city: client.city || prev.city || '',
+      full_name: nameOverride || client.full_name || prev.full_name || '',
+      phone: client.phone || prev.phone || '',
+      passport_inn: client.passport_number || prev.passport_inn || '',
+      tk: client.tk || prev.tk || '',
+    }));
+  }, []);
+
+  const orderShippingSuggestionsByName = useMemo(() => {
+    const rows = clients || [];
+    const needle = String(newOrder.full_name || '').toLowerCase().trim();
+    if (!needle) return rows.slice(0, 8);
+    return rows
+      .filter((c) => String(c.full_name || '').toLowerCase().includes(needle))
+      .slice(0, 8);
+  }, [clients, newOrder.full_name]);
+
+  const orderShippingSuggestionsByPhone = useMemo(() => {
+    const rows = clients || [];
+    const needle = String(newOrder.phone || '').toLowerCase().trim();
+    if (!needle) return rows.slice(0, 8);
+    return rows
+      .filter((c) => String(c.phone || '').toLowerCase().includes(needle))
+      .slice(0, 8);
+  }, [clients, newOrder.phone]);
+
+  const orderShippingSuggestionsByPassport = useMemo(() => {
+    const rows = clients || [];
+    const needle = String(newOrder.passport_inn || '').toLowerCase().trim();
+    if (!needle) return rows.slice(0, 8);
+    return rows
+      .filter((c) => String(c.passport_number || '').toLowerCase().includes(needle))
+      .slice(0, 8);
+  }, [clients, newOrder.passport_inn]);
+
+  const activeOrderShippingSuggestions = useMemo(() => {
+    if (!orderShippingActiveField) return [];
+    if (orderShippingActiveField === 'full_name') return orderShippingSuggestionsByName;
+    if (orderShippingActiveField === 'phone') return orderShippingSuggestionsByPhone;
+    if (orderShippingActiveField === 'passport_inn') return orderShippingSuggestionsByPassport;
+    return [];
+  }, [orderShippingActiveField, orderShippingSuggestionsByName, orderShippingSuggestionsByPhone, orderShippingSuggestionsByPassport]);
+
+  const renderOrderShippingSuggestion = useCallback((client) => {
+    if (orderShippingActiveField === 'phone') {
+      return (
+        <>
+          <div className="font-medium">{client.phone || 'Без телефона'}</div>
+          <div className="text-xs text-gray-500">
+            {client.full_name || 'Без ФИО'} · {client.city || 'Без города'}
+          </div>
+        </>
+      );
+    }
+    if (orderShippingActiveField === 'passport_inn') {
+      return (
+        <>
+          <div className="font-medium">{client.passport_number || 'Без номера'}</div>
+          <div className="text-xs text-gray-500">
+            {client.full_name || 'Без ФИО'} · {client.city || 'Без города'}
+          </div>
+        </>
+      );
+    }
+    return (
+      <>
+        <div className="font-medium">{client.full_name}</div>
+        <div className="text-xs text-gray-500">
+          {client.city || 'Без города'} · {client.phone || 'Без телефона'}
+        </div>
+      </>
+    );
+  }, [orderShippingActiveField]);
+
+  const handleShipmentFullNameChange = useCallback((value) => {
+    setNewOrder((prev) => ({ ...prev, full_name: value }));
+    setOrderShippingActiveField('full_name');
+    setOrderShippingShowSuggestions(true);
+    const exact = (clients || []).find(
+      (c) => String(c.full_name || '').toLowerCase().trim() === value.toLowerCase().trim()
+    );
+    if (exact) {
+      applyClientToOrder(exact, exact.full_name);
+      setOrderShippingShowSuggestions(false);
+    }
+  }, [applyClientToOrder, clients]);
+
+  const handleShipmentPhoneChange = useCallback((value) => {
+    setNewOrder((prev) => ({ ...prev, phone: value }));
+    setOrderShippingActiveField('phone');
+    setOrderShippingShowSuggestions(true);
+    const exact = (clients || []).find(
+      (c) => String(c.phone || '').toLowerCase().trim() === value.toLowerCase().trim()
+    );
+    if (exact) {
+      applyClientToOrder(exact, exact.full_name);
+      setOrderShippingShowSuggestions(false);
+    }
+  }, [applyClientToOrder, clients]);
+
+  const handleShipmentPassportChange = useCallback((value) => {
+    setNewOrder((prev) => ({ ...prev, passport_inn: value }));
+    setOrderShippingActiveField('passport_inn');
+    setOrderShippingShowSuggestions(true);
+    const exact = (clients || []).find(
+      (c) => String(c.passport_number || '').toLowerCase().trim() === value.toLowerCase().trim()
+    );
+    if (exact) {
+      applyClientToOrder(exact, exact.full_name);
+      setOrderShippingShowSuggestions(false);
+    }
+  }, [applyClientToOrder, clients]);
+
   const handleProductSelection = useCallback((productId, shouldSelect) => {
     if (shouldSelect) {
       setSelectedProducts((prev) => (prev.includes(productId) ? prev : [...prev, productId]));
@@ -261,6 +662,38 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
   const getEffectiveSelectedProducts = useCallback(() => (
     selectedProducts.filter((id) => !removedProductIds.includes(id))
   ), [selectedProducts, removedProductIds]);
+  const effectiveSelectedCount = useMemo(
+    () => selectedProducts.filter((id) => !removedProductIds.includes(id)).length,
+    [selectedProducts, removedProductIds]
+  );
+  const effectiveSelectedTotals = useMemo(() => {
+    const selected = selectedProducts
+      .filter((id) => !removedProductIds.includes(id))
+      .map((id) => products.find((p) => p.id === id))
+      .filter(Boolean);
+    return sumOrderComponentTotals(selected);
+  }, [selectedProducts, removedProductIds, products]);
+
+  useEffect(() => {
+    if (!showOrderModal || newOrder.status < 1 || orderPlacesManuallyEdited) {
+      return;
+    }
+    setNewOrder((prev) => ({ ...prev, places: effectiveSelectedCount > 0 ? String(effectiveSelectedCount) : '' }));
+  }, [showOrderModal, newOrder.status, orderPlacesManuallyEdited, effectiveSelectedCount]);
+
+  useEffect(() => {
+    if (!showOrderModal || newOrder.status < 1 || orderPriceManuallyEdited) {
+      return;
+    }
+    setNewOrder((prev) => ({ ...prev, price: effectiveSelectedTotals.price > 0 ? String(effectiveSelectedTotals.price) : '' }));
+  }, [showOrderModal, newOrder.status, orderPriceManuallyEdited, effectiveSelectedTotals.price]);
+
+  useEffect(() => {
+    if (!showOrderModal || newOrder.status < 1 || orderWeightManuallyEdited) {
+      return;
+    }
+    setNewOrder((prev) => ({ ...prev, weight: effectiveSelectedTotals.weight > 0 ? String(effectiveSelectedTotals.weight) : '' }));
+  }, [showOrderModal, newOrder.status, orderWeightManuallyEdited, effectiveSelectedTotals.weight]);
 
   const getProductStatusLabel = useCallback((status) => productStatusByValue[status] || 'Unknown', [productStatusByValue]);
 
@@ -295,6 +728,12 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
           o.id?.toString().includes(lowerFilter) ||
           (o.name || '').toLowerCase().includes(lowerFilter) ||
           (o.description || '').toLowerCase().includes(lowerFilter) ||
+          (o.ship_date || '').toLowerCase().includes(lowerFilter) ||
+          (o.city || '').toLowerCase().includes(lowerFilter) ||
+          (o.full_name || '').toLowerCase().includes(lowerFilter) ||
+          (o.phone || '').toLowerCase().includes(lowerFilter) ||
+          (o.passport_inn || '').toLowerCase().includes(lowerFilter) ||
+          (o.tk || '').toLowerCase().includes(lowerFilter) ||
           statusOptions.find((opt) => opt.value === o.status)?.label.toLowerCase().includes(lowerFilter) ||
           (o.components || []).some((p) => (p.name || '').toLowerCase().includes(lowerFilter)) ||
           (o.payments || []).some((p) => `${p.method || ''} ${p.comment || ''}`.toLowerCase().includes(lowerFilter)))
@@ -306,6 +745,7 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
     { key: 'status', label: 'Status', width: columnWidths.status },
     { key: 'name', label: 'Name', width: columnWidths.name },
     { key: 'description', label: 'Description', width: columnWidths.description },
+    { key: 'shipping', label: 'Shipping', width: columnWidths.shipping },
     { key: 'components', label: 'Components', width: columnWidths.components },
     { key: 'payments', label: 'Payments', width: columnWidths.payments },
     { key: 'debt', label: 'Debt', width: columnWidths.debt },
@@ -328,17 +768,13 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
               setShowEditProducts(true);
               setOriginalSelectedProducts([]);
               setRemovedProductIds([]);
-              setNewOrder({
-                id: null,
-                components: [],
-                quantity: 0,
-                status: 0,
-                name: '',
-                description: '',
-                payments: [{ method: '', amount: '', comment: '' }],
-                debt: 0,
-              });
+              setNewOrder(createEmptyOrder());
               setSelectedProducts([]);
+              setOrderShippingShowSuggestions(false);
+              setOrderShippingActiveField(null);
+              setOrderPlacesManuallyEdited(false);
+              setOrderPriceManuallyEdited(false);
+              setOrderWeightManuallyEdited(false);
             }}
             className="wm-btn wm-btn-primary"
             disabled={submitting || products.length === 0}
@@ -353,6 +789,15 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
                   status: statusOptions.find((opt) => opt.value === o.status)?.label || 'Unknown',
                   name: o.name || '',
                   description: o.description,
+                  ship_date: o.ship_date || '',
+                  city: o.city || '',
+                  full_name: o.full_name || '',
+                  phone: o.phone || '',
+                  passport_inn: o.passport_inn || '',
+                  tk: o.tk || '',
+                  places: o.places ?? '',
+                  price: o.price ?? '',
+                  weight: o.weight ?? '',
                   components: o.components?.map((p) => p.name).join(', ') || '',
                   payments: o.payments?.map((p) => `${p.method}: ${p.amount}`).join(', ') || '',
                   debt: o.debt,
@@ -433,6 +878,165 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
                     ))}
                   </select>
                 </div>
+                {newOrder.status >= 1 && (
+                  <div className="border rounded p-3 bg-slate-50">
+                    <p className="font-medium mb-2">Данные отправки</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      <input
+                        type="date"
+                        value={newOrder.ship_date || ''}
+                        onChange={(e) => setNewOrder({ ...newOrder, ship_date: e.target.value })}
+                        className="wm-input"
+                        placeholder="Дата отправки"
+                      />
+                      <input
+                        type="text"
+                        value={newOrder.city || ''}
+                        onChange={(e) => setNewOrder({ ...newOrder, city: e.target.value })}
+                        className="wm-input"
+                        placeholder="Город"
+                      />
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={newOrder.full_name || ''}
+                          onChange={(e) => handleShipmentFullNameChange(e.target.value)}
+                          onFocus={() => {
+                            setOrderShippingActiveField('full_name');
+                            setOrderShippingShowSuggestions(true);
+                          }}
+                          onBlur={() => setTimeout(() => setOrderShippingShowSuggestions(false), 150)}
+                          className="wm-input"
+                          placeholder="ФИО"
+                        />
+                        {orderShippingShowSuggestions && orderShippingActiveField === 'full_name' && activeOrderShippingSuggestions.length > 0 && (
+                          <div className="absolute z-10 mt-1 w-full max-h-48 overflow-auto border rounded bg-white shadow">
+                            {activeOrderShippingSuggestions.map((client) => (
+                              <button
+                                key={client.id}
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  applyClientToOrder(client);
+                                  setOrderShippingShowSuggestions(false);
+                                }}
+                                className="w-full text-left px-3 py-2 hover:bg-slate-100"
+                              >
+                                {renderOrderShippingSuggestion(client)}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={newOrder.phone || ''}
+                          onChange={(e) => handleShipmentPhoneChange(e.target.value)}
+                          onFocus={() => {
+                            setOrderShippingActiveField('phone');
+                            setOrderShippingShowSuggestions(true);
+                          }}
+                          onBlur={() => setTimeout(() => setOrderShippingShowSuggestions(false), 150)}
+                          className="wm-input"
+                          placeholder="Телефон"
+                        />
+                        {orderShippingShowSuggestions && orderShippingActiveField === 'phone' && activeOrderShippingSuggestions.length > 0 && (
+                          <div className="absolute z-10 mt-1 w-full max-h-48 overflow-auto border rounded bg-white shadow">
+                            {activeOrderShippingSuggestions.map((client) => (
+                              <button
+                                key={client.id}
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  applyClientToOrder(client);
+                                  setOrderShippingShowSuggestions(false);
+                                }}
+                                className="w-full text-left px-3 py-2 hover:bg-slate-100"
+                              >
+                                {renderOrderShippingSuggestion(client)}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={newOrder.passport_inn || ''}
+                          onChange={(e) => handleShipmentPassportChange(e.target.value)}
+                          onFocus={() => {
+                            setOrderShippingActiveField('passport_inn');
+                            setOrderShippingShowSuggestions(true);
+                          }}
+                          onBlur={() => setTimeout(() => setOrderShippingShowSuggestions(false), 150)}
+                          className="wm-input"
+                          placeholder="Паспорт/ИНН"
+                        />
+                        {orderShippingShowSuggestions && orderShippingActiveField === 'passport_inn' && activeOrderShippingSuggestions.length > 0 && (
+                          <div className="absolute z-10 mt-1 w-full max-h-48 overflow-auto border rounded bg-white shadow">
+                            {activeOrderShippingSuggestions.map((client) => (
+                              <button
+                                key={client.id}
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => {
+                                  applyClientToOrder(client);
+                                  setOrderShippingShowSuggestions(false);
+                                }}
+                                className="w-full text-left px-3 py-2 hover:bg-slate-100"
+                              >
+                                {renderOrderShippingSuggestion(client)}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        value={newOrder.tk || ''}
+                        onChange={(e) => setNewOrder({ ...newOrder, tk: e.target.value })}
+                        className="wm-input"
+                        placeholder="ТК"
+                      />
+                      <input
+                        type="number"
+                        value={newOrder.places ?? ''}
+                        onChange={(e) => {
+                          setOrderPlacesManuallyEdited(true);
+                          setNewOrder({ ...newOrder, places: e.target.value });
+                        }}
+                        className="wm-input"
+                        placeholder="Кол-во мест (авто от товаров)"
+                      />
+                      <p className="text-xs text-gray-500 -mt-1">Авто: по количеству товаров в заказе, можно изменить вручную.</p>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={newOrder.price ?? ''}
+                        onChange={(e) => {
+                          setOrderPriceManuallyEdited(true);
+                          setNewOrder({ ...newOrder, price: e.target.value });
+                        }}
+                        className="wm-input"
+                        placeholder="Цена отправки (руб.)"
+                      />
+                      <p className="text-xs text-gray-500 -mt-1">Авто: сумма `summaRubSoSkidkoj` всех товаров заказа.</p>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={newOrder.weight ?? ''}
+                        onChange={(e) => {
+                          setOrderWeightManuallyEdited(true);
+                          setNewOrder({ ...newOrder, weight: e.target.value });
+                        }}
+                        className="wm-input md:col-span-2"
+                        placeholder="Вес (кг)"
+                      />
+                      <p className="text-xs text-gray-500 md:col-span-2 -mt-1">Авто: сумма веса всех товаров заказа.</p>
+                    </div>
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm mb-1">Debt</label>
                   <input
@@ -628,6 +1232,22 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
                     <strong>Status:</strong>{' '}
                     {statusOptions.find((opt) => opt.value === newOrder.status)?.label || 'Unknown'}
                   </p>
+                  {newOrder.status >= 1 && (
+                    <p>
+                      <strong>Отправка:</strong>{' '}
+                      {[
+                        newOrder.ship_date,
+                        newOrder.city,
+                        newOrder.full_name,
+                        newOrder.phone,
+                        newOrder.passport_inn,
+                        newOrder.tk,
+                        newOrder.places !== '' ? `мест: ${newOrder.places}` : '',
+                        newOrder.price !== '' ? `цена: ${newOrder.price}` : '',
+                        newOrder.weight !== '' ? `вес: ${newOrder.weight}` : '',
+                      ].filter(Boolean).join(', ') || 'не заполнено'}
+                    </p>
+                  )}
                   <p>
                     <strong>Payments:</strong>
                   </p>
@@ -685,6 +1305,189 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
         </div>
       )}
 
+      {shipmentModalOrder && (
+        <div
+          className="fixed inset-0 bg-slate-900/30 backdrop-blur-[2px] flex items-center justify-center z-50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShipmentModalOrder(null);
+              setShipmentDraft(createShipmentDraftFromOrder());
+              setShipmentShowSuggestions(false);
+              setShipmentActiveField(null);
+            }
+          }}
+        >
+          <div className="bg-white p-6 rounded-xl shadow-xl w-full max-w-2xl">
+            <h3 className="text-lg font-bold mb-4">Создать отправку из заказа #{shipmentModalOrder.id}</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
+              <input
+                type="date"
+                value={shipmentDraft.ship_date}
+                onChange={(e) => setShipmentDraft((prev) => ({ ...prev, ship_date: e.target.value }))}
+                className="wm-input w-full"
+              />
+              <input
+                type="text"
+                placeholder="Город"
+                value={shipmentDraft.city}
+                onChange={(e) => setShipmentDraft((prev) => ({ ...prev, city: e.target.value }))}
+                className="wm-input w-full"
+              />
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="ФИО *"
+                  value={shipmentDraft.full_name}
+                  onChange={(e) => handleShipmentDraftFullNameChange(e.target.value)}
+                  onFocus={() => {
+                    setShipmentActiveField('full_name');
+                    setShipmentShowSuggestions(true);
+                  }}
+                  onBlur={() => setTimeout(() => setShipmentShowSuggestions(false), 150)}
+                  className="wm-input w-full"
+                />
+                {shipmentShowSuggestions && shipmentActiveField === 'full_name' && activeShipmentSuggestions.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full max-h-48 overflow-auto border rounded bg-white shadow">
+                    {activeShipmentSuggestions.map((client) => (
+                      <button
+                        key={client.id}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          applyClientToShipmentDraft(client);
+                          setShipmentShowSuggestions(false);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-100"
+                      >
+                        {renderShipmentSuggestion(client)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Номер тел."
+                  value={shipmentDraft.phone}
+                  onChange={(e) => handleShipmentDraftPhoneChange(e.target.value)}
+                  onFocus={() => {
+                    setShipmentActiveField('phone');
+                    setShipmentShowSuggestions(true);
+                  }}
+                  onBlur={() => setTimeout(() => setShipmentShowSuggestions(false), 150)}
+                  className="wm-input w-full"
+                />
+                {shipmentShowSuggestions && shipmentActiveField === 'phone' && activeShipmentSuggestions.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full max-h-48 overflow-auto border rounded bg-white shadow">
+                    {activeShipmentSuggestions.map((client) => (
+                      <button
+                        key={client.id}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          applyClientToShipmentDraft(client);
+                          setShipmentShowSuggestions(false);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-100"
+                      >
+                        {renderShipmentSuggestion(client)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Номер паспорта/ИНН"
+                  value={shipmentDraft.passport_inn}
+                  onChange={(e) => handleShipmentDraftPassportChange(e.target.value)}
+                  onFocus={() => {
+                    setShipmentActiveField('passport_inn');
+                    setShipmentShowSuggestions(true);
+                  }}
+                  onBlur={() => setTimeout(() => setShipmentShowSuggestions(false), 150)}
+                  className="wm-input w-full"
+                />
+                {shipmentShowSuggestions && shipmentActiveField === 'passport_inn' && activeShipmentSuggestions.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full max-h-48 overflow-auto border rounded bg-white shadow">
+                    {activeShipmentSuggestions.map((client) => (
+                      <button
+                        key={client.id}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          applyClientToShipmentDraft(client);
+                          setShipmentShowSuggestions(false);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-100"
+                      >
+                        {renderShipmentSuggestion(client)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <input
+                type="text"
+                placeholder="ТК"
+                value={shipmentDraft.tk}
+                onChange={(e) => setShipmentDraft((prev) => ({ ...prev, tk: e.target.value }))}
+                className="wm-input w-full"
+              />
+              <input
+                type="number"
+                placeholder="Кол-во мест (авто от заказа)"
+                value={shipmentDraft.places}
+                onChange={(e) => setShipmentDraft((prev) => ({ ...prev, places: e.target.value }))}
+                className="wm-input w-full"
+              />
+              <p className="text-xs text-gray-500 -mt-1">Авто: по количеству товаров в заказе, можно изменить вручную.</p>
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Цена (руб.)"
+                value={shipmentDraft.price}
+                onChange={(e) => setShipmentDraft((prev) => ({ ...prev, price: e.target.value }))}
+                className="wm-input w-full"
+              />
+              <p className="text-xs text-gray-500 -mt-1">Авто: сумма `summaRubSoSkidkoj` всех товаров заказа.</p>
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Вес (кг)"
+                value={shipmentDraft.weight}
+                onChange={(e) => setShipmentDraft((prev) => ({ ...prev, weight: e.target.value }))}
+                className="wm-input w-full"
+              />
+              <p className="text-xs text-gray-500 -mt-1">Авто: сумма веса всех товаров заказа.</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={handleCreateShipmentFromOrder}
+                className="wm-btn wm-btn-primary"
+                disabled={submitting}
+              >
+                {submitting ? 'Создание...' : 'Создать'}
+              </button>
+              <button
+                onClick={() => {
+                  setShipmentModalOrder(null);
+                  setShipmentDraft(createShipmentDraftFromOrder());
+                  setShipmentShowSuggestions(false);
+                  setShipmentActiveField(null);
+                }}
+                className="wm-btn"
+                disabled={submitting}
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="wm-table-wrap relative max-h-[500px]">
         <table className="wm-table text-sm">
           <thead>
@@ -713,7 +1516,7 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
               </tr>
             ) : (
               filteredOrders.map((order) => (
-                <tr key={order.id}>
+                <tr key={order.id} className={`wm-order-row wm-order-${getOrderPaymentStatus(order)}`}>
                   <td className="wm-td">{order.id}</td>
                   <td className="wm-td">
                     <span className={`wm-status-badge ${ORDER_STATUS_BADGE_CLASS[order.status] || "wm-status-new"}`}>
@@ -722,6 +1525,22 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
                   </td>
                   <td className="wm-td">{order.name || 'None'}</td>
                   <td className="wm-td">{order.description}</td>
+                  <td className="wm-td">
+                    {order.status >= 1 ? (
+                      <>
+                        {order.ship_date && <div>Дата: {order.ship_date}</div>}
+                        {order.city && <div>Город: {order.city}</div>}
+                        {order.full_name && <div>ФИО: {order.full_name}</div>}
+                        {order.phone && <div>Тел: {order.phone}</div>}
+                        {order.tk && <div>ТК: {order.tk}</div>}
+                        {order.places ? <div>Мест: {order.places}</div> : null}
+                        {order.price ? <div>Цена: {order.price}</div> : null}
+                        {order.weight ? <div>Вес: {order.weight}</div> : null}
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                   <td className="wm-td">
                     {order.components?.map((p, index) => (
                       <div key={index}>{p.name}</div>
@@ -749,6 +1568,15 @@ export default function OrderTable({ orders, setOrders, token, exportToCSV, prod
                     >
                       Delete
                     </button>
+                    {order.status >= 1 && (
+                      <button
+                        onClick={() => handleOpenShipmentModal(order)}
+                        className="wm-btn wm-btn-primary"
+                        disabled={submitting}
+                      >
+                        В отправки
+                      </button>
+                    )}
                     </div>
                   </td>
                 </tr>

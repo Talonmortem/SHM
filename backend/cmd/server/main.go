@@ -13,7 +13,6 @@ func main() {
 	db.ConnectDB()
 	defer db.CloseDB()
 	db.CreateTables()
-	//db.SeedTestData()
 	middleware.LoadUsersRoles()
 
 	r := gin.Default()
@@ -54,6 +53,7 @@ func main() {
 		protected.POST("/articles", db.CreateArticle)
 		protected.PUT("/articles/:id", db.UpdateArticle)
 		protected.DELETE("/articles/:id", db.DeleteArticle)
+		protected.GET("/balance", db.GetBalance)
 		protected.GET("/clients", db.GetClients)
 		protected.POST("/clients", db.CreateClient)
 		protected.PUT("/clients/:id", db.UpdateClient)
@@ -66,6 +66,8 @@ func main() {
 		protected.POST("/shipment_notes", db.CreateShipmentNote)
 		protected.PUT("/shipment_notes/:id", db.UpdateShipmentNote)
 		protected.DELETE("/shipment_notes/:id", db.DeleteShipmentNote)
+		protected.GET("/courier_daily_payments", db.GetCourierDailyPayments)
+		protected.PUT("/courier_daily_payments", db.UpsertCourierDailyPayment)
 	}
 
 	r.Run(":8086")

@@ -1,7 +1,9 @@
 package db
 
 import (
+	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 
@@ -31,10 +33,17 @@ func CreateTablesShipping() {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 
+		CREATE TABLE IF NOT EXISTS courier_daily_payments (
+			ship_date TEXT PRIMARY KEY,
+			amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+			comment TEXT DEFAULT ''
+		);
+
 		CREATE INDEX IF NOT EXISTS idx_shipments_ship_date ON shipments(ship_date);
 		CREATE INDEX IF NOT EXISTS idx_shipments_city ON shipments(city);
 		CREATE INDEX IF NOT EXISTS idx_shipments_full_name ON shipments(full_name);
 		CREATE INDEX IF NOT EXISTS idx_shipment_notes_ship_date ON shipment_notes(ship_date);
+		CREATE INDEX IF NOT EXISTS idx_courier_daily_payments_ship_date ON courier_daily_payments(ship_date);
 	`)
 	if err != nil {
 		log.Fatal("Failed to create shipments tables:", err)
@@ -73,15 +82,30 @@ func CreateShipment(c *gin.Context) {
 
 func GetShipments(c *gin.Context) {
 	date := strings.TrimSpace(c.Query("date"))
+	dateFrom := strings.TrimSpace(c.Query("from"))
+	dateTo := strings.TrimSpace(c.Query("to"))
 
 	query := `
 		SELECT id, ship_date, city, full_name, phone, passport_inn, tk, places, price, weight
 		FROM shipments
 	`
 	args := []any{}
+	conditions := make([]string, 0, 2)
 	if date != "" {
-		query += " WHERE ship_date = $1"
 		args = append(args, date)
+		conditions = append(conditions, fmt.Sprintf("ship_date = $%d", len(args)))
+	} else {
+		if dateFrom != "" {
+			args = append(args, dateFrom)
+			conditions = append(conditions, fmt.Sprintf("ship_date >= $%d", len(args)))
+		}
+		if dateTo != "" {
+			args = append(args, dateTo)
+			conditions = append(conditions, fmt.Sprintf("ship_date <= $%d", len(args)))
+		}
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	query += " ORDER BY ship_date DESC, id DESC"
 
@@ -189,12 +213,27 @@ func CreateShipmentNote(c *gin.Context) {
 
 func GetShipmentNotes(c *gin.Context) {
 	date := strings.TrimSpace(c.Query("date"))
+	dateFrom := strings.TrimSpace(c.Query("from"))
+	dateTo := strings.TrimSpace(c.Query("to"))
 
 	query := `SELECT id, ship_date, note FROM shipment_notes`
 	args := []any{}
+	conditions := make([]string, 0, 2)
 	if date != "" {
-		query += " WHERE ship_date = $1"
 		args = append(args, date)
+		conditions = append(conditions, fmt.Sprintf("ship_date = $%d", len(args)))
+	} else {
+		if dateFrom != "" {
+			args = append(args, dateFrom)
+			conditions = append(conditions, fmt.Sprintf("ship_date >= $%d", len(args)))
+		}
+		if dateTo != "" {
+			args = append(args, dateTo)
+			conditions = append(conditions, fmt.Sprintf("ship_date <= $%d", len(args)))
+		}
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	query += " ORDER BY ship_date DESC, id DESC"
 
@@ -258,4 +297,88 @@ func DeleteShipmentNote(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Shipment note deleted successfully"})
+}
+
+func GetCourierDailyPayments(c *gin.Context) {
+	date := strings.TrimSpace(c.Query("date"))
+	dateFrom := strings.TrimSpace(c.Query("from"))
+	dateTo := strings.TrimSpace(c.Query("to"))
+
+	query := `SELECT ship_date, amount, COALESCE(comment, '') FROM courier_daily_payments`
+	args := []any{}
+	conditions := make([]string, 0, 2)
+	if date != "" {
+		args = append(args, date)
+		conditions = append(conditions, fmt.Sprintf("ship_date = $%d", len(args)))
+	} else {
+		if dateFrom != "" {
+			args = append(args, dateFrom)
+			conditions = append(conditions, fmt.Sprintf("ship_date >= $%d", len(args)))
+		}
+		if dateTo != "" {
+			args = append(args, dateTo)
+			conditions = append(conditions, fmt.Sprintf("ship_date <= $%d", len(args)))
+		}
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY ship_date DESC"
+
+	rows, err := DB.Query(query, args...)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	payments := make([]models.CourierDailyPayment, 0)
+	for rows.Next() {
+		var payment models.CourierDailyPayment
+		if err := rows.Scan(&payment.ShipDate, &payment.Amount, &payment.Comment); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		payments = append(payments, payment)
+	}
+
+	c.JSON(http.StatusOK, payments)
+}
+
+func UpsertCourierDailyPayment(c *gin.Context) {
+	var payload models.CourierDailyPayment
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	payload.ShipDate = strings.TrimSpace(payload.ShipDate)
+	if payload.ShipDate == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Дата обязательна"})
+		return
+	}
+	amount := payload.Amount
+	if math.IsNaN(amount) || math.IsInf(amount, 0) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректная сумма"})
+		return
+	}
+
+	payload.Comment = strings.TrimSpace(payload.Comment)
+
+	_, err := DB.Exec(`
+		INSERT INTO courier_daily_payments (ship_date, amount, comment)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (ship_date) DO UPDATE
+		SET amount = EXCLUDED.amount, comment = EXCLUDED.comment
+	`, payload.ShipDate, amount, payload.Comment)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.CourierDailyPayment{
+		ShipDate: payload.ShipDate,
+		Amount:   amount,
+		Comment:  payload.Comment,
+	})
 }

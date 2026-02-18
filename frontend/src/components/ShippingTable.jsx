@@ -43,7 +43,7 @@ function normalizeNumber(value) {
   return Number.isNaN(n) ? 0 : n;
 }
 
-export default function ShippingTable({ shipments, setShipments, filter, dateFilter, token, username, exportToCSV }) {
+export default function ShippingTable({ shipments, setShipments, filter, dateFrom, dateTo, token, username, exportToCSV }) {
   const [editingShipmentId, setEditingShipmentId] = useState(null);
   const [shipmentForm, setShipmentForm] = useState(createEmptyShipment());
   const [showForm, setShowForm] = useState(false);
@@ -56,6 +56,10 @@ export default function ShippingTable({ shipments, setShipments, filter, dateFil
   const [noteForm, setNoteForm] = useState({ id: null, ship_date: "", note: "" });
   const [showNoteForm, setShowNoteForm] = useState(false);
   const [noteError, setNoteError] = useState("");
+  const [courierPaymentsByDate, setCourierPaymentsByDate] = useState({});
+  const [courierPaymentDraftByDate, setCourierPaymentDraftByDate] = useState({});
+  const [courierPaymentError, setCourierPaymentError] = useState("");
+  const [courierPaymentMessage, setCourierPaymentMessage] = useState("");
   const { columnWidths: shipmentColumnWidths, handleResizeStart: handleShipmentResizeStart } = useResizableColumns(
     SHIPPING_COLUMNS_STORAGE_KEY,
     DEFAULT_SHIPPING_COLUMN_WIDTHS
@@ -82,8 +86,15 @@ export default function ShippingTable({ shipments, setShipments, filter, dateFil
     fetchClients();
   }, [token, username]);
 
+  const selectedNoteDate = useMemo(() => {
+    if (dateFrom && dateTo) {
+      return dateFrom === dateTo ? dateFrom : "";
+    }
+    return dateFrom || dateTo || "";
+  }, [dateFrom, dateTo]);
+
   useEffect(() => {
-    if (!dateFilter) {
+    if (!selectedNoteDate) {
       setNotes([]);
       return;
     }
@@ -92,7 +103,7 @@ export default function ShippingTable({ shipments, setShipments, filter, dateFil
       try {
         const res = await axios.get("/api/shipment_notes", {
           headers,
-          params: { date: dateFilter },
+          params: { date: selectedNoteDate },
         });
         setNotes(res.data || []);
         setNoteError("");
@@ -102,11 +113,11 @@ export default function ShippingTable({ shipments, setShipments, filter, dateFil
     };
 
     fetchNotes();
-  }, [dateFilter, token, username]);
+  }, [selectedNoteDate, token, username]);
 
   const resetForm = () => {
     setEditingShipmentId(null);
-    setShipmentForm(createEmptyShipment(dateFilter));
+    setShipmentForm(createEmptyShipment(dateFrom || dateTo || ""));
     setShowForm(false);
     setShowSuggestions(false);
     setActiveField(null);
@@ -114,7 +125,7 @@ export default function ShippingTable({ shipments, setShipments, filter, dateFil
 
   const openCreateForm = () => {
     setEditingShipmentId(null);
-    setShipmentForm(createEmptyShipment(dateFilter));
+    setShipmentForm(createEmptyShipment(dateFrom || dateTo || ""));
     setShowForm(true);
     setError("");
     setShowSuggestions(false);
@@ -312,7 +323,10 @@ export default function ShippingTable({ shipments, setShipments, filter, dateFil
   const filteredShipments = useMemo(() => {
     const lowerFilter = filter.toLowerCase().trim();
     return (shipments || []).filter((shipment) => {
-      if (dateFilter && shipment.ship_date !== dateFilter) {
+      if (dateFrom && shipment.ship_date < dateFrom) {
+        return false;
+      }
+      if (dateTo && shipment.ship_date > dateTo) {
         return false;
       }
       if (!lowerFilter) {
@@ -331,10 +345,116 @@ export default function ShippingTable({ shipments, setShipments, filter, dateFil
         .map((v) => String(v || "").toLowerCase())
         .some((v) => v.includes(lowerFilter));
     });
-  }, [shipments, filter, dateFilter]);
+  }, [shipments, filter, dateFrom, dateTo]);
+
+  const shipmentsByDate = useMemo(() => {
+    const groups = {};
+    for (const shipment of filteredShipments) {
+      const key = shipment.ship_date || "";
+      if (!groups[key]) {
+        groups[key] = [];
+      }
+      groups[key].push(shipment);
+    }
+    return groups;
+  }, [filteredShipments]);
+
+  const shipmentDates = useMemo(
+    () => Object.keys(shipmentsByDate).filter(Boolean).sort((a, b) => (a < b ? 1 : -1)),
+    [shipmentsByDate]
+  );
+
+  useEffect(() => {
+    if (shipmentDates.length === 0) {
+      setCourierPaymentsByDate({});
+      setCourierPaymentDraftByDate({});
+      return;
+    }
+
+    const sortedAsc = [...shipmentDates].sort((a, b) => (a > b ? 1 : -1));
+    const fetchCourierPayments = async () => {
+      try {
+        const res = await axios.get("/api/courier_daily_payments", {
+          headers,
+          params: {
+            from: sortedAsc[0],
+            to: sortedAsc[sortedAsc.length - 1],
+          },
+        });
+        const items = res.data || [];
+        const nextSaved = {};
+        const nextDraft = {};
+        for (const date of shipmentDates) {
+          nextSaved[date] = 0;
+          nextDraft[date] = "";
+        }
+        for (const item of items) {
+          if (!item?.ship_date || !shipmentDates.includes(item.ship_date)) {
+            continue;
+          }
+          const amount = Number(item.amount) || 0;
+          nextSaved[item.ship_date] = amount;
+          nextDraft[item.ship_date] = amount === 0 ? "" : String(amount);
+        }
+        setCourierPaymentsByDate(nextSaved);
+        setCourierPaymentDraftByDate(nextDraft);
+        setCourierPaymentError("");
+      } catch (e) {
+        setCourierPaymentError("Ошибка загрузки оплат курьера: " + (e.response?.data?.error || e.message));
+      }
+    };
+
+    fetchCourierPayments();
+  }, [shipmentDates, token, username]);
+
+  const handleCourierPaymentChange = (shipDate, value) => {
+    setCourierPaymentDraftByDate((prev) => ({
+      ...prev,
+      [shipDate]: value,
+    }));
+    setCourierPaymentMessage("");
+  };
+
+  const handleSaveCourierPayment = async (shipDate) => {
+    const amount = normalizeNumber(courierPaymentDraftByDate[shipDate]);
+    try {
+      await axios.put(
+        "/api/courier_daily_payments",
+        {
+          ship_date: shipDate,
+          amount,
+        },
+        { headers }
+      );
+      setCourierPaymentsByDate((prev) => ({
+        ...prev,
+        [shipDate]: amount,
+      }));
+      setCourierPaymentDraftByDate((prev) => ({
+        ...prev,
+        [shipDate]: amount === 0 ? "" : String(amount),
+      }));
+      setCourierPaymentError("");
+      setCourierPaymentMessage(`Сохранено: ${shipDate}`);
+    } catch (e) {
+      setCourierPaymentError("Ошибка сохранения оплаты курьера: " + (e.response?.data?.error || e.message));
+    }
+  };
+
+  const courierTotal = useMemo(
+    () =>
+      shipmentDates.reduce((acc, date) => {
+        const raw = courierPaymentDraftByDate[date];
+        if (raw === undefined) {
+          return acc + normalizeNumber(courierPaymentsByDate[date]);
+        }
+        return acc + normalizeNumber(raw);
+      }, 0),
+    [shipmentDates, courierPaymentDraftByDate, courierPaymentsByDate]
+  );
 
   const openAddNote = () => {
-    setNoteForm({ id: null, ship_date: dateFilter || "", note: "" });
+    setNoteForm({ id: null, ship_date: selectedNoteDate || "", note: "" });
     setShowNoteForm(true);
     setNoteError("");
   };
@@ -580,69 +700,113 @@ export default function ShippingTable({ shipments, setShipments, filter, dateFil
         </form>
       )}
 
-      <div className="wm-table-wrap">
-        <table className="wm-table">
-          <thead>
-            <tr>
-              {shipmentColumns.map((column) => (
-                <th
-                  key={column.key}
-                  className={`wm-th relative ${column.isAction ? "wm-action-cell" : ""}`}
-                  style={{ width: shipmentColumnWidths[column.key] }}
-                >
-                  {column.label}
-                  <div
-                    className="wm-col-resize"
-                    onMouseDown={(e) => handleShipmentResizeStart(column.key, e)}
-                  />
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filteredShipments.length === 0 ? (
+      {filteredShipments.length === 0 ? (
+        <div className="wm-table-wrap">
+          <table className="wm-table">
+            <tbody>
               <tr>
                 <td colSpan="10" className="wm-empty">Отправки не найдены</td>
               </tr>
-            ) : (
-              filteredShipments.map((shipment) => (
-                <tr key={shipment.id}>
-                  <td className="wm-td" style={{ width: shipmentColumnWidths.ship_date }}>{shipment.ship_date}</td>
-                  <td className="wm-td" style={{ width: shipmentColumnWidths.city }}>{shipment.city}</td>
-                  <td className="wm-td" style={{ width: shipmentColumnWidths.full_name }}>{shipment.full_name}</td>
-                  <td className="wm-td" style={{ width: shipmentColumnWidths.phone }}>{shipment.phone}</td>
-                  <td className="wm-td" style={{ width: shipmentColumnWidths.passport_inn }}>{shipment.passport_inn}</td>
-                  <td className="wm-td" style={{ width: shipmentColumnWidths.tk }}>{shipment.tk}</td>
-                  <td className="wm-td" style={{ width: shipmentColumnWidths.places }}>{shipment.places}</td>
-                  <td className="wm-td" style={{ width: shipmentColumnWidths.price }}>{shipment.price}</td>
-                  <td className="wm-td" style={{ width: shipmentColumnWidths.weight }}>{shipment.weight}</td>
-                  <td className="wm-td wm-action-cell" style={{ width: shipmentColumnWidths.actions }}>
-                    <div className="wm-action-buttons">
-                      <button onClick={() => handleEditShipment(shipment)} className="wm-btn">
-                        Редактировать
-                      </button>
-                      <button onClick={() => handleDeleteShipment(shipment.id)} className="wm-btn wm-btn-danger">
-                        Удалить
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          {shipmentDates.map((shipDate) => (
+            <div key={shipDate} className="border rounded-xl p-3 bg-white">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h3 className="text-lg font-semibold">Дата: {shipDate}</h3>
+                <span className="wm-muted">Отправок: {shipmentsByDate[shipDate].length}</span>
+              </div>
+
+              <div className="wm-table-wrap">
+                <table className="wm-table">
+                  <thead>
+                    <tr>
+                      {shipmentColumns.map((column) => (
+                        <th
+                          key={column.key}
+                          className={`wm-th relative ${column.isAction ? "wm-action-cell" : ""}`}
+                          style={{ width: shipmentColumnWidths[column.key] }}
+                        >
+                          {column.label}
+                          <div
+                            className="wm-col-resize"
+                            onMouseDown={(e) => handleShipmentResizeStart(column.key, e)}
+                          />
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shipmentsByDate[shipDate].map((shipment) => (
+                      <tr key={shipment.id}>
+                        <td className="wm-td" style={{ width: shipmentColumnWidths.ship_date }}>{shipment.ship_date}</td>
+                        <td className="wm-td" style={{ width: shipmentColumnWidths.city }}>{shipment.city}</td>
+                        <td className="wm-td" style={{ width: shipmentColumnWidths.full_name }}>{shipment.full_name}</td>
+                        <td className="wm-td" style={{ width: shipmentColumnWidths.phone }}>{shipment.phone}</td>
+                        <td className="wm-td" style={{ width: shipmentColumnWidths.passport_inn }}>{shipment.passport_inn}</td>
+                        <td className="wm-td" style={{ width: shipmentColumnWidths.tk }}>{shipment.tk}</td>
+                        <td className="wm-td" style={{ width: shipmentColumnWidths.places }}>{shipment.places}</td>
+                        <td className="wm-td" style={{ width: shipmentColumnWidths.price }}>{shipment.price}</td>
+                        <td className="wm-td" style={{ width: shipmentColumnWidths.weight }}>{shipment.weight}</td>
+                        <td className="wm-td wm-action-cell" style={{ width: shipmentColumnWidths.actions }}>
+                          <div className="wm-action-buttons">
+                            <button onClick={() => handleEditShipment(shipment)} className="wm-btn">
+                              Редактировать
+                            </button>
+                            <button onClick={() => handleDeleteShipment(shipment.id)} className="wm-btn wm-btn-danger">
+                              Удалить
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 mt-3">
+                <span className="text-sm font-medium">Оплата курьера за день:</span>
+                <input
+                  type="text"
+                  className="wm-input w-44"
+                  placeholder="Сумма"
+                  value={courierPaymentDraftByDate[shipDate] ?? ""}
+                  onChange={(e) => handleCourierPaymentChange(shipDate, e.target.value)}
+                />
+                <button type="button" className="wm-btn wm-btn-primary" onClick={() => handleSaveCourierPayment(shipDate)}>
+                  Сохранить
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(courierPaymentError || courierPaymentMessage) && (
+        <div className="mt-3">
+          {courierPaymentError && <p className="wm-error">{courierPaymentError}</p>}
+          {courierPaymentMessage && <p className="wm-muted">{courierPaymentMessage}</p>}
+        </div>
+      )}
+
+      {shipmentDates.length > 0 && (
+        <div className="mt-4 p-3 border rounded-xl bg-slate-50">
+          <div className="text-lg font-semibold">Итого оплата курьера: {courierTotal.toFixed(2)}</div>
+        </div>
+      )}
 
       <div className="mt-6">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <h3 className="text-lg font-semibold">Заметки по дню</h3>
-          <button onClick={openAddNote} className="wm-btn wm-btn-primary" disabled={!dateFilter}>
+          <button onClick={openAddNote} className="wm-btn wm-btn-primary" disabled={!selectedNoteDate}>
             Добавить заметку
           </button>
         </div>
 
-        {!dateFilter && (
-          <p className="wm-muted">Выберите дату, чтобы увидеть и добавить заметки.</p>
+        {!selectedNoteDate && (
+          <p className="wm-muted">Выберите один день (одинаковые С и ПО), чтобы увидеть и добавить заметки.</p>
         )}
 
         {noteError && <p className="wm-error mb-3">{noteError}</p>}
@@ -675,7 +839,7 @@ export default function ShippingTable({ shipments, setShipments, filter, dateFil
           </form>
         )}
 
-        {dateFilter && (
+        {selectedNoteDate && (
           <div className="wm-table-wrap">
             <table className="wm-table">
               <thead>

@@ -2,31 +2,35 @@ import React, { useMemo, useState } from "react";
 import axios from "axios";
 import useResizableColumns from "./useResizableColumns";
 
-const ARTICLE_SORT_OPTIONS = ["code", "description", "euro", "count", "weight", "price"];
+const ARTICLE_SORT_OPTIONS = ["id", "no", "code", "description", "euro", "colli", "kg", "value"];
 const ARTICLE_COLUMNS_STORAGE_KEY = "wm_articles_columns_v1";
 const DEFAULT_ARTICLE_COLUMN_WIDTHS = {
+  id: 90,
+  no: 100,
   code: 140,
   description: 260,
   euro: 110,
-  count: 110,
-  weight: 110,
-  price: 110,
+  colli: 110,
+  kg: 110,
+  value: 110,
   actions: 150,
 };
 
 function createEmptyArticle() {
   return {
+    id: "",
+    no: "",
     code: "",
     description: "",
     euro: "",
-    count: "",
-    weight: "",
-    price: "",
+    colli: "",
+    kg: "",
+    value: "",
   };
 }
 
 export default function ArticleTable({ articles, setArticles, filter, token, username, exportToCSV }) {
-  const [editingArticleId, setEditingArticleId] = useState(null);
+  const [editingArticleServiceId, setEditingArticleServiceId] = useState(null);
   const [articleForm, setArticleForm] = useState(createEmptyArticle);
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
@@ -40,27 +44,29 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
   };
 
   const resetForm = () => {
-    setEditingArticleId(null);
+    setEditingArticleServiceId(null);
     setArticleForm(createEmptyArticle());
     setShowForm(false);
   };
 
   const openCreateForm = () => {
-    setEditingArticleId(null);
+    setEditingArticleServiceId(null);
     setArticleForm(createEmptyArticle());
     setShowForm(true);
     setError("");
   };
 
   const handleEditArticle = (article) => {
-    setEditingArticleId(article.id);
+    setEditingArticleServiceId(article.serviceId ?? article.id);
     setArticleForm({
+      id: article.id ?? "",
+      no: article.no ?? "",
       code: article.code || "",
       description: article.description || "",
       euro: article.euro ?? "",
-      count: article.count ?? "",
-      weight: article.weight ?? "",
-      price: article.price ?? "",
+      colli: article.colli ?? "",
+      kg: article.kg ?? "",
+      value: article.value ?? "",
     });
     setShowForm(true);
     setError("");
@@ -69,8 +75,8 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
   const handleDeleteArticle = async (id) => {
     try {
       await axios.delete(`/api/articles/${id}`, { headers });
-      setArticles((prev) => (prev || []).filter((article) => article.id !== id));
-      if (editingArticleId === id) {
+      setArticles((prev) => (prev || []).filter((article) => (article.serviceId ?? article.id) !== id));
+      if (editingArticleServiceId === id) {
         resetForm();
       }
       setError("");
@@ -82,21 +88,25 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
   const handleSubmitArticle = async (e) => {
     e.preventDefault();
 
+    if (!String(articleForm.id || "").trim()) {
+      setError("ID обязателен");
+      return;
+    }
     if (!articleForm.code.trim()) {
       setError("Код артикула обязателен");
       return;
     }
 
     try {
-      if (editingArticleId) {
+      if (editingArticleServiceId) {
         await axios.put(
-          `/api/articles/${editingArticleId}`,
+          `/api/articles/${editingArticleServiceId}`,
           articleForm,
           { headers }
         );
         setArticles((prev) =>
           (prev || []).map((article) =>
-            article.id === editingArticleId ? { ...article, ...articleForm } : article
+            (article.serviceId ?? article.id) === editingArticleServiceId ? { ...article, ...articleForm, serviceId: editingArticleServiceId } : article
           )
         );
       } else {
@@ -107,7 +117,7 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
       setError("");
       resetForm();
     } catch (e) {
-      const action = editingArticleId ? "сохранения" : "создания";
+      const action = editingArticleServiceId ? "сохранения" : "создания";
       setError(`Ошибка ${action} артикула: ` + (e.response?.data?.error || e.message));
     }
   };
@@ -158,12 +168,14 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
   };
 
   const columns = [
+    { key: "id", label: "ID", sortable: true },
+    { key: "no", label: "NO", sortable: true },
     { key: "code", label: "Code", sortable: true },
     { key: "description", label: "Description", sortable: true },
     { key: "euro", label: "Euro", sortable: true },
-    { key: "count", label: "Count", sortable: true },
-    { key: "weight", label: "Weight", sortable: true },
-    { key: "price", label: "Price", sortable: true },
+    { key: "colli", label: "Colli", sortable: true },
+    { key: "kg", label: "KG", sortable: true },
+    { key: "value", label: "Value", sortable: true },
     { key: "actions", label: "Actions", sortable: false, isAction: true },
   ];
 
@@ -175,7 +187,7 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
             onClick={() => openCreateForm()}
             className="wm-btn wm-btn-primary"
           >
-            Добавить артикул
+            Добавить приход
           </button>
         </div>
 
@@ -192,10 +204,24 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
       {showForm && (
         <form onSubmit={handleSubmitArticle} className="mb-4 p-3 border rounded-xl bg-slate-50">
           <h3 className="text-lg font-semibold mb-3">
-            {editingArticleId ? "Редактирование артикула" : "Новый артикул"}
+            {editingArticleServiceId ? "Редактирование прихода" : "Новый приход"}
           </h3>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <input
+              type="number"
+              placeholder="ID"
+              value={articleForm.id}
+              onChange={(e) => setArticleForm((prev) => ({ ...prev, id: e.target.value }))}
+              className="wm-input w-full"
+            />
+            <input
+              type="number"
+              placeholder="NO"
+              value={articleForm.no}
+              onChange={(e) => setArticleForm((prev) => ({ ...prev, no: e.target.value }))}
+              className="wm-input w-full"
+            />
             <input
               type="text"
               placeholder="Code"
@@ -219,23 +245,23 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
             />
             <input
               type="text"
-              placeholder="Count"
-              value={articleForm.count}
-              onChange={(e) => setArticleForm((prev) => ({ ...prev, count: e.target.value }))}
+              placeholder="Colli"
+              value={articleForm.colli}
+              onChange={(e) => setArticleForm((prev) => ({ ...prev, colli: e.target.value }))}
               className="wm-input w-full"
             />
             <input
               type="text"
-              placeholder="Weight"
-              value={articleForm.weight}
-              onChange={(e) => setArticleForm((prev) => ({ ...prev, weight: e.target.value }))}
+              placeholder="KG"
+              value={articleForm.kg}
+              onChange={(e) => setArticleForm((prev) => ({ ...prev, kg: e.target.value }))}
               className="wm-input w-full"
             />
             <input
               type="text"
-              placeholder="Price"
-              value={articleForm.price}
-              onChange={(e) => setArticleForm((prev) => ({ ...prev, price: e.target.value }))}
+              placeholder="Value"
+              value={articleForm.value}
+              onChange={(e) => setArticleForm((prev) => ({ ...prev, value: e.target.value }))}
               className="wm-input w-full"
             />
           </div>
@@ -245,7 +271,7 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
               type="submit"
               className="wm-btn wm-btn-primary"
             >
-              {editingArticleId ? "Сохранить" : "Создать"}
+              {editingArticleServiceId ? "Сохранить" : "Создать"}
             </button>
             <button
               type="button"
@@ -282,17 +308,19 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
           <tbody>
             {filteredArticles.length === 0 ? (
               <tr>
-                <td colSpan="7" className="wm-empty">Артикулы не найдены</td>
+                <td colSpan="9" className="wm-empty">Приход не найден</td>
               </tr>
             ) : (
               filteredArticles.map((article) => (
-                <tr key={article.id}>
+                <tr key={article.serviceId || article.id}>
+                  <td className="wm-td" style={{ width: columnWidths.id }}>{article.id}</td>
+                  <td className="wm-td" style={{ width: columnWidths.no }}>{article.no}</td>
                   <td className="wm-td" style={{ width: columnWidths.code }}>{article.code}</td>
                   <td className="wm-td" style={{ width: columnWidths.description }}>{article.description}</td>
                   <td className="wm-td" style={{ width: columnWidths.euro }}>{article.euro}</td>
-                  <td className="wm-td" style={{ width: columnWidths.count }}>{article.count}</td>
-                  <td className="wm-td" style={{ width: columnWidths.weight }}>{article.weight}</td>
-                  <td className="wm-td" style={{ width: columnWidths.price }}>{article.price}</td>
+                  <td className="wm-td" style={{ width: columnWidths.colli }}>{article.colli}</td>
+                  <td className="wm-td" style={{ width: columnWidths.kg }}>{article.kg}</td>
+                  <td className="wm-td" style={{ width: columnWidths.value }}>{article.value}</td>
                   <td className="wm-td wm-action-cell" style={{ width: columnWidths.actions }}>
                     <div className="wm-action-buttons">
                       <button
@@ -302,7 +330,7 @@ export default function ArticleTable({ articles, setArticles, filter, token, use
                         Редактировать
                       </button>
                       <button
-                        onClick={() => handleDeleteArticle(article.id)}
+                        onClick={() => handleDeleteArticle(article.serviceId ?? article.id)}
                         className="wm-btn wm-btn-danger"
                       >
                         Удалить

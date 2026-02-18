@@ -31,8 +31,9 @@ function createEmptyProduct() {
     video: "",
     description: "",
     skidka: "0",
-    summaRubSoSkidkoj: "0",
+    weight: "0",
     count: 0,
+    summaRubSoSkidkoj: "0",
     onePrice: "0",
   };
 }
@@ -224,11 +225,13 @@ export default function ProductTable({ products, articles = [], setProducts, set
           p.description?.toLowerCase().includes(lowerFilter) ||
           p.skidka?.toLowerCase().includes(lowerFilter) ||
           p.summaRubSoSkidkoj?.toLowerCase().includes(lowerFilter) ||
+          p.weight?.toString().includes(lowerFilter) ||
           p.count?.toString().includes(lowerFilter) ||
           p.onePrice?.toLowerCase().includes(lowerFilter) ||
           statusOptions.find((opt) => opt.value === p.status)?.label.toLowerCase().includes(lowerFilter) ||
           getArticlesInProduct(p.articlesInProduct).some((a) =>
             a.article.toString().includes(lowerFilter) ||
+            String((articles || []).find((item) => Number(item.serviceId || item.id) === Number(a.article))?.code || "").toLowerCase().includes(lowerFilter) ||
             a.cursEvro.includes(lowerFilter) ||
             a.priceEvro.includes(lowerFilter) ||
             a.weight.includes(lowerFilter) ||
@@ -238,7 +241,7 @@ export default function ProductTable({ products, articles = [], setProducts, set
     ).sort((a, b) => a.id - b.id);
     console.log("Filtered Products:", filtered);
     return filtered;
-  }, [products, statusFilter, filter, statusOptions]);
+  }, [products, statusFilter, filter, statusOptions, articles]);
 
   const handleRowClick = useCallback((productId, index, e) => {
     const product = products.find((p) => p.id === productId);
@@ -277,12 +280,12 @@ export default function ProductTable({ products, articles = [], setProducts, set
   }, [payments]);
 
   const buildProductTotals = useCallback((updatedArticles, skidkaValue) => {
-    const totalCount = updatedArticles.reduce((sum, a) => sum + (parseInt(a.count, 10) || 0), 0);
+    const totalWeight = updatedArticles.reduce((sum, a) => sum + (parseFloat(a.weight) || 0), 0);
     const totalSumRub = updatedArticles.reduce((sum, a) => sum + (parseFloat(a.sumRub) || 0), 0);
     const skidkaPercent = parseFloat((skidkaValue || "").toString().replace("%", "")) / 100 || 0;
     const summaRubSoSkidkoj = (totalSumRub * (1 - skidkaPercent)).toFixed(2);
-    const onePriceProduct = totalCount > 0 ? (parseFloat(summaRubSoSkidkoj) / totalCount).toFixed(2) : "0.00";
-    return { totalCount, summaRubSoSkidkoj, onePriceProduct };
+    const onePriceProduct = totalWeight !== 0 ? (parseFloat(summaRubSoSkidkoj) / totalWeight).toFixed(2) : "0.00";
+    return { totalWeight: totalWeight.toFixed(2), summaRubSoSkidkoj, onePriceProduct };
   }, []);
 
   const updateArticle = (index, field, value) => {
@@ -292,11 +295,10 @@ export default function ProductTable({ products, articles = [], setProducts, set
     const a = updatedArticles[index] || {};
     const priceEvro = parseFloat(a.priceEvro) || 0;
     const cursEvro = parseFloat(a.cursEvro) || 0;
-    const count = parseInt(a.count, 10) || 0;
     const weight = parseFloat(a.weight) || 0;
 
     // Validate inputs
-    if (priceEvro < 0 || cursEvro < 0 || count < 0 || weight < 0) {
+    if (priceEvro < 0 || cursEvro < 0) {
       alert("Values cannot be negative");
       return;
     }
@@ -309,25 +311,25 @@ export default function ProductTable({ products, articles = [], setProducts, set
       sumEvro,
       sumRub,
     };
-    const { totalCount, summaRubSoSkidkoj, onePriceProduct } = buildProductTotals(updatedArticles, newProduct.skidka);
+    const { totalWeight, summaRubSoSkidkoj, onePriceProduct } = buildProductTotals(updatedArticles, newProduct.skidka);
 
     setNewProduct({
       ...newProduct,
       articlesInProduct: updatedArticles,
-      count: totalCount,
+      weight: totalWeight,
       summaRubSoSkidkoj,
       onePrice: onePriceProduct,
     });
   };
 
-  const handleArticleSelect = useCallback((index, rawCode) => {
-    const code = parseInt(rawCode, 10);
-    if (Number.isNaN(code)) {
+  const handleArticleSelect = useCallback((index, rawArticleServiceId) => {
+    const articleServiceID = parseInt(String(rawArticleServiceId), 10);
+    if (Number.isNaN(articleServiceID)) {
       return;
     }
-    const selected = (articles || []).find((a) => Number(a.code) === code);
+    const selected = (articles || []).find((a) => Number(a.serviceId) === articleServiceID);
     if (!selected) {
-      updateArticle(index, "article", code);
+      updateArticle(index, "article", articleServiceID);
       return;
     }
 
@@ -335,11 +337,10 @@ export default function ProductTable({ products, articles = [], setProducts, set
     const current = updatedArticles[index] || {};
     const nextArticle = {
       ...current,
-      article: code,
+      article: articleServiceID,
       cursEvro: String(selected.euro ?? current.cursEvro ?? "0"),
-      priceEvro: String(selected.price ?? current.priceEvro ?? "0"),
-      weight: String(selected.weight ?? current.weight ?? "0"),
-      count: Number(selected.count ?? current.count ?? 1),
+      priceEvro: String(selected.value ?? current.priceEvro ?? "0"),
+      weight: String(selected.kg ?? current.weight ?? "0"),
     };
 
     const priceEvro = parseFloat(nextArticle.priceEvro) || 0;
@@ -354,11 +355,11 @@ export default function ProductTable({ products, articles = [], setProducts, set
       sumRub,
     };
 
-    const { totalCount, summaRubSoSkidkoj, onePriceProduct } = buildProductTotals(updatedArticles, newProduct.skidka);
+    const { totalWeight, summaRubSoSkidkoj, onePriceProduct } = buildProductTotals(updatedArticles, newProduct.skidka);
     setNewProduct({
       ...newProduct,
       articlesInProduct: updatedArticles,
-      count: totalCount,
+      weight: totalWeight,
       summaRubSoSkidkoj,
       onePrice: onePriceProduct,
     });
@@ -377,7 +378,6 @@ export default function ProductTable({ products, articles = [], setProducts, set
           weight: "0",
           sumEvro: "0",
           sumRub: "0",
-          count: 1,
         },
       ],
     });
@@ -385,7 +385,7 @@ export default function ProductTable({ products, articles = [], setProducts, set
 
   const removeArticle = (index) => {
     const updatedArticles = getArticlesInProduct(newProduct.articlesInProduct).filter((_, i) => i !== index);
-    const { totalCount, summaRubSoSkidkoj, onePriceProduct } = buildProductTotals(updatedArticles, newProduct.skidka);
+    const { totalWeight, summaRubSoSkidkoj, onePriceProduct } = buildProductTotals(updatedArticles, newProduct.skidka);
     setArticleSearchByIndex((prev) => {
       const next = {};
       Object.keys(prev).forEach((k) => {
@@ -399,7 +399,7 @@ export default function ProductTable({ products, articles = [], setProducts, set
     setNewProduct({
       ...newProduct,
       articlesInProduct: updatedArticles,
-      count: totalCount,
+      weight: totalWeight,
       summaRubSoSkidkoj,
       onePrice: onePriceProduct,
     });
@@ -415,6 +415,17 @@ export default function ProductTable({ products, articles = [], setProducts, set
       const description = (a.description || "").toLowerCase();
       return code.includes(normalized) || description.includes(normalized);
     });
+  }, [articles]);
+
+  const articlesByServiceId = useMemo(() => {
+    const map = new Map();
+    (articles || []).forEach((a) => {
+      const key = Number(a.serviceId ?? a.id);
+      if (!Number.isNaN(key)) {
+        map.set(key, a);
+      }
+    });
+    return map;
   }, [articles]);
 
   const columns = [
@@ -438,12 +449,13 @@ export default function ProductTable({ products, articles = [], setProducts, set
     const rows = [];
     filteredProducts.forEach((product) => {
       getArticlesInProduct(product.articlesInProduct).forEach((article, index) => {
+        const linkedArticle = articlesByServiceId.get(Number(article.article));
         rows.push({
           productId: product.id,
           isProductRow: index === 0,
           status: product.status,
           name: index === 0 ? product.name : "",
-          article: article.article,
+          article: linkedArticle?.code ?? article.article,
           video: index === 0 ? product.video : "",
           cursEvro: article.cursEvro,
           priceEvro: article.priceEvro,
@@ -452,13 +464,13 @@ export default function ProductTable({ products, articles = [], setProducts, set
           sumRub: article.sumRub,
           skidka: index === 0 ? product.skidka : "",
           summaRubSoSkidkoj: index === 0 ? product.summaRubSoSkidkoj : "",
-          count: index === 0 ? product.count : article.count,
+          count: index === 0 ? product.count : "",
           onePrice: index === 0 ? product.onePrice : "",
         });
       });
     });
     return rows;
-  }, [filteredProducts]);
+  }, [filteredProducts, articlesByServiceId]);
 
   return (
     <div className="wm-surface">
@@ -494,9 +506,10 @@ export default function ProductTable({ products, articles = [], setProducts, set
                   name: p.name,
                   video: p.video,
                   description: p.description,
+                  weight: p.weight,
+                  count: p.count,
                   skidka: p.skidka,
                   summaRubSoSkidkoj: p.summaRubSoSkidkoj,
-                  count: p.count,
                   onePrice: p.onePrice,
                   articlesInProduct: JSON.stringify(p.articlesInProduct),
                 })),
@@ -582,10 +595,11 @@ export default function ProductTable({ products, articles = [], setProducts, set
                     const value = e.target.value;
                     if (value.match(/^\d*\.?\d*%?$/)) {
                       const updatedArticles = [...getArticlesInProduct(newProduct.articlesInProduct)];
-                      const { totalCount, summaRubSoSkidkoj, onePriceProduct } = buildProductTotals(updatedArticles, value);
+                      const { totalWeight, summaRubSoSkidkoj, onePriceProduct } = buildProductTotals(updatedArticles, value);
                       setNewProduct({
                         ...newProduct,
                         skidka: value,
+                        weight: totalWeight,
                         summaRubSoSkidkoj,
                         onePrice: onePriceProduct,
                       });
@@ -604,12 +618,21 @@ export default function ProductTable({ products, articles = [], setProducts, set
                 />
               </div>
               <div>
-                <label className="block text-sm mb-1">Count (calc)</label>
+                <label className="block text-sm mb-1">Weight (calc)</label>
                 <input
                   type="text"
-                  value={newProduct.count}
+                  value={newProduct.weight}
                   readOnly
                   className="wm-input w-full bg-gray-100"
+                />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Count (manual)</label>
+                <input
+                  type="number"
+                  value={newProduct.count}
+                  onChange={(e) => setNewProduct({ ...newProduct, count: parseInt(e.target.value, 10) || 0 })}
+                  className="wm-input w-full"
                 />
               </div>
               <div>
@@ -645,9 +668,9 @@ export default function ProductTable({ products, articles = [], setProducts, set
                         className="wm-select w-full"
                       >
                         <option value="">Select article...</option>
-                        {getFilteredArticles(articleSearchByIndex[index]).map((a) => (
-                          <option key={a.id} value={a.code}>
-                            {a.code} - {a.description} (stock: {a.count ?? 0})
+        {getFilteredArticles(articleSearchByIndex[index]).map((a) => (
+                          <option key={a.serviceId || a.id} value={a.serviceId || a.id}>
+                            {a.code} - {a.description} (stock kg: {a.kg ?? 0})
                           </option>
                         ))}
                       </select>
@@ -680,16 +703,8 @@ export default function ProductTable({ products, articles = [], setProducts, set
                       />
                     </div>
                     <div>
-                      <label className="block text-sm mb-1">Count</label>
-                      <input
-                        type="number"
-                        value={article.count}
-                        min={1}
-                        onChange={(e) => updateArticle(index, "count", parseInt(e.target.value, 10))}
-                        className="wm-input w-full"
-                      />
-                      <p className="text-xs text-gray-500 mt-1">
-                        Available now: {articles.find((a) => Number(a.code) === Number(article.article))?.count ?? 0}
+                      <p className="text-xs text-gray-500 mt-6">
+                        Available kg now: {articles.find((a) => Number(a.serviceId || a.id) === Number(article.article))?.kg ?? 0}
                       </p>
                     </div>
                     <div>

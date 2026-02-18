@@ -393,6 +393,22 @@ body {
   background: #f4f8fb;
 }
 
+.wm-table tbody tr.wm-order-paid {
+  background: #eaf9ef;
+}
+
+.wm-table tbody tr.wm-order-paid:hover {
+  background: #ddf3e5;
+}
+
+.wm-table tbody tr.wm-order-partial {
+  background: #fff7dc;
+}
+
+.wm-table tbody tr.wm-order-partial:hover {
+  background: #ffefc2;
+}
+
 .wm-table .wm-btn {
   padding: 0.28rem 0.52rem;
   border-radius: 0.56rem;
@@ -415,6 +431,22 @@ body {
 
 .wm-table tbody tr:hover .wm-action-cell {
   background: #f4f8fb;
+}
+
+.wm-table tbody tr.wm-order-paid .wm-action-cell {
+  background: #eaf9ef;
+}
+
+.wm-table tbody tr.wm-order-paid:hover .wm-action-cell {
+  background: #ddf3e5;
+}
+
+.wm-table tbody tr.wm-order-partial .wm-action-cell {
+  background: #fff7dc;
+}
+
+.wm-table tbody tr.wm-order-partial:hover .wm-action-cell {
+  background: #ffefc2;
 }
 
 .wm-table tfoot .wm-action-cell {

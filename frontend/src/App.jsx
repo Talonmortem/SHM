@@ -7,6 +7,7 @@ import PaymentsMonitoring from "./components/PaymentsMonitoring";
 import ArticleTable from "./components/ArticleTable";
 import ClientsTable from "./components/ClientsTable";
 import ShippingTable from "./components/ShippingTable";
+import BalanceTable from "./components/BalanceTable";
 
 const FILTER_PRESETS_STORAGE_KEY = "wm_filter_presets_v1";
 
@@ -14,7 +15,8 @@ const VIEW_META = {
   products: { title: "Товары", subtitle: "Каталог и складские остатки" },
   orders: { title: "Заказы", subtitle: "Сборка и отгрузка" },
   payments: { title: "Платежи", subtitle: "Мониторинг оплат" },
-  articles: { title: "Артикулы", subtitle: "Справочник и поставки" },
+  articles: { title: "Приход", subtitle: "Поставки и складской приход" },
+  balance: { title: "Баланс", subtitle: "Остатки по артикулам и статусам" },
   clients: { title: "Клиенты", subtitle: "База клиентов и контактов" },
   shipping: { title: "Отправки", subtitle: "Календарь и контроль отгрузок" },
 };
@@ -50,11 +52,13 @@ export default function App() {
   const [clientFilter, setClientFilter] = useState("");
   const [shippingFilter, setShippingFilter] = useState("");
   const [paymentsFilter, setPaymentsFilter] = useState("");
+  const [balanceFilter, setBalanceFilter] = useState("");
   const [productStatusFilter, setProductStatusFilter] = useState("");
   const [orderStatusFilter, setOrderStatusFilter] = useState("");
   const [paymentsDateFrom, setPaymentsDateFrom] = useState("");
   const [paymentsDateTo, setPaymentsDateTo] = useState("");
-  const [shippingDateFilter, setShippingDateFilter] = useState("");
+  const [shippingDateFrom, setShippingDateFrom] = useState("");
+  const [shippingDateTo, setShippingDateTo] = useState("");
   const [selectedPresetName, setSelectedPresetName] = useState("");
   const [filterPresetsByView, setFilterPresetsByView] = useState(readStoredFilterPresets);
   const [error, setError] = useState("");
@@ -186,7 +190,12 @@ export default function App() {
     articles: {
       value: articleFilter,
       setValue: setArticleFilter,
-      placeholder: "Глобальный фильтр по артикулам",
+      placeholder: "Глобальный фильтр по приходу",
+    },
+    balance: {
+      value: balanceFilter,
+      setValue: setBalanceFilter,
+      placeholder: "Глобальный фильтр по балансу",
     },
     clients: {
       value: clientFilter,
@@ -224,9 +233,14 @@ export default function App() {
       setClientFilter("");
       return;
     }
+    if (view === "balance") {
+      setBalanceFilter("");
+      return;
+    }
     if (view === "shipping") {
       setShippingFilter("");
-      setShippingDateFilter("");
+      setShippingDateFrom("");
+      setShippingDateTo("");
     }
   };
 
@@ -246,8 +260,11 @@ export default function App() {
     if (targetView === "clients") {
       return { query: clientFilter };
     }
+    if (targetView === "balance") {
+      return { query: balanceFilter };
+    }
     if (targetView === "shipping") {
-      return { query: shippingFilter, date: shippingDateFilter };
+      return { query: shippingFilter, dateFrom: shippingDateFrom, dateTo: shippingDateTo };
     }
     return {};
   };
@@ -277,9 +294,14 @@ export default function App() {
       setClientFilter(filters.query || "");
       return;
     }
+    if (targetView === "balance") {
+      setBalanceFilter(filters.query || "");
+      return;
+    }
     if (targetView === "shipping") {
       setShippingFilter(filters.query || "");
-      setShippingDateFilter(filters.date || "");
+      setShippingDateFrom(filters.dateFrom || filters.date || "");
+      setShippingDateTo(filters.dateTo || filters.date || "");
     }
   };
 
@@ -397,7 +419,7 @@ export default function App() {
           <strong>{orders.length}</strong>
         </article>
         <article>
-          <span>Артикулы</span>
+          <span>Приход</span>
           <strong>{articles.length}</strong>
         </article>
         <article>
@@ -421,7 +443,10 @@ export default function App() {
           Платежи
         </button>
         <button onClick={() => setView("articles")} className={view === "articles" ? "is-active" : ""}>
-          Артикулы
+          Приход
+        </button>
+        <button onClick={() => setView("balance")} className={view === "balance" ? "is-active" : ""}>
+          Баланс
         </button>
         <button onClick={() => setView("clients")} className={view === "clients" ? "is-active" : ""}>
           Клиенты
@@ -486,12 +511,20 @@ export default function App() {
                 </>
               )}
               {view === "shipping" && (
-                <input
-                  type="date"
-                  className="wm-input"
-                  value={shippingDateFilter}
-                  onChange={(e) => setShippingDateFilter(e.target.value)}
-                />
+                <>
+                  <input
+                    type="date"
+                    className="wm-input"
+                    value={shippingDateFrom}
+                    onChange={(e) => setShippingDateFrom(e.target.value)}
+                  />
+                  <input
+                    type="date"
+                    className="wm-input"
+                    value={shippingDateTo}
+                    onChange={(e) => setShippingDateTo(e.target.value)}
+                  />
+                </>
               )}
               <button className="wm-btn" onClick={resetActiveGlobalFilters}>
                 Сбросить
@@ -550,6 +583,7 @@ export default function App() {
             orders={orders || []}
             products={products}
             setOrders={setOrders}
+            setShipments={setShipments}
             filter={orderFilter}
             statusFilter={orderStatusFilter}
             setFilter={setOrderFilter}
@@ -592,12 +626,22 @@ export default function App() {
           />
         )}
 
+        {view === "balance" && (
+          <BalanceTable
+            token={token}
+            username={username}
+            filter={balanceFilter}
+            exportToCSV={exportToCSV}
+          />
+        )}
+
         {view === "shipping" && (
           <ShippingTable
             shipments={shipments}
             setShipments={setShipments}
             filter={shippingFilter}
-            dateFilter={shippingDateFilter}
+            dateFrom={shippingDateFrom}
+            dateTo={shippingDateTo}
             token={token}
             username={username}
             exportToCSV={exportToCSV}

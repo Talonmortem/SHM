@@ -19,6 +19,7 @@ type Product struct {
 	Status            int                `json:"status"`
 	Name              string             `json:"name"`
 	ArticlesInProduct []ArticleInProduct `json:"articlesInProduct"`
+	Weight            string             `json:"weight"`
 	Skidka            string             `json:"skidka"`
 	SummaRubSoSkidkoj string             `json:"summaRubSoSkidkoj"`
 	Count             int                `json:"count"`
@@ -39,24 +40,30 @@ type ArticleInProduct struct {
 }
 
 type Article struct {
+	ServiceID   int     `json:"serviceId"`
 	ID          int     `json:"id"`
-	Code        int     `json:"code"`
+	No          int     `json:"no"`
+	Code        string  `json:"code"`
 	Description string  `json:"description"`
 	Euro        float64 `json:"euro"`
-	Count       int     `json:"count"`
-	Weight      float64 `json:"weight"`
-	Price       float64 `json:"price"`
+	Colli       float64 `json:"colli"`
+	KG          float64 `json:"kg"`
+	Value       float64 `json:"value"`
 }
 
 func (a *Article) UnmarshalJSON(data []byte) error {
 	type rawArticle struct {
 		ID          interface{} `json:"id"`
+		No          interface{} `json:"no"`
 		Code        interface{} `json:"code"`
 		Description string      `json:"description"`
 		Euro        interface{} `json:"euro"`
-		Count       interface{} `json:"count"`
-		Weight      interface{} `json:"weight"`
-		Price       interface{} `json:"price"`
+		Colli       interface{} `json:"colli"`
+		KG          interface{} `json:"kg"`
+		Value       interface{} `json:"value"`
+		Count       interface{} `json:"count"`  // backward compatibility
+		Weight      interface{} `json:"weight"` // backward compatibility
+		Price       interface{} `json:"price"`  // backward compatibility
 	}
 
 	var raw rawArticle
@@ -73,8 +80,15 @@ func (a *Article) UnmarshalJSON(data []byte) error {
 		}
 		a.ID = id
 	}
+	if raw.No != nil {
+		no, err := parseFlexibleInt(raw.No)
+		if err != nil {
+			return fmt.Errorf("invalid no: %w", err)
+		}
+		a.No = no
+	}
 	if raw.Code != nil {
-		code, err := parseFlexibleInt(raw.Code)
+		code, err := parseFlexibleString(raw.Code)
 		if err != nil {
 			return fmt.Errorf("invalid code: %w", err)
 		}
@@ -87,29 +101,64 @@ func (a *Article) UnmarshalJSON(data []byte) error {
 		}
 		a.Euro = euro
 	}
-	if raw.Count != nil {
-		count, err := parseFlexibleInt(raw.Count)
+	if raw.Colli != nil {
+		colli, err := parseFlexibleFloat(raw.Colli)
+		if err != nil {
+			return fmt.Errorf("invalid colli: %w", err)
+		}
+		a.Colli = colli
+	}
+	if raw.KG != nil {
+		kg, err := parseFlexibleFloat(raw.KG)
+		if err != nil {
+			return fmt.Errorf("invalid kg: %w", err)
+		}
+		a.KG = kg
+	}
+	if raw.Value != nil {
+		value, err := parseFlexibleFloat(raw.Value)
+		if err != nil {
+			return fmt.Errorf("invalid value: %w", err)
+		}
+		a.Value = value
+	}
+
+	if a.No == 0 && raw.Count != nil {
+		no, err := parseFlexibleInt(raw.Count)
 		if err != nil {
 			return fmt.Errorf("invalid count: %w", err)
 		}
-		a.Count = count
+		a.No = no
 	}
-	if raw.Weight != nil {
-		weight, err := parseFlexibleFloat(raw.Weight)
+	if a.KG == 0 && raw.Weight != nil {
+		kg, err := parseFlexibleFloat(raw.Weight)
 		if err != nil {
 			return fmt.Errorf("invalid weight: %w", err)
 		}
-		a.Weight = weight
+		a.KG = kg
 	}
-	if raw.Price != nil {
-		price, err := parseFlexibleFloat(raw.Price)
+	if a.Value == 0 && raw.Price != nil {
+		value, err := parseFlexibleFloat(raw.Price)
 		if err != nil {
 			return fmt.Errorf("invalid price: %w", err)
 		}
-		a.Price = price
+		a.Value = value
 	}
 
 	return nil
+}
+
+func parseFlexibleString(v interface{}) (string, error) {
+	switch value := v.(type) {
+	case string:
+		return strings.TrimSpace(value), nil
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64), nil
+	case int:
+		return strconv.Itoa(value), nil
+	default:
+		return "", fmt.Errorf("unsupported value type %T", v)
+	}
 }
 
 func parseFlexibleInt(v interface{}) (int, error) {
@@ -211,6 +260,18 @@ type Payment struct { // corresponds to payments_monitoring table
 	Comment string  `json:"comment"`
 }
 
+type BalanceRow struct {
+	ID          int     `json:"id"`
+	No          int     `json:"no"`
+	Code        string  `json:"code"`
+	Description string  `json:"description"`
+	IncomeKG    float64 `json:"incomeKg"`
+	SentKG      float64 `json:"sentKg"`
+	BalanceKG   float64 `json:"balanceKg"`
+	ReservedKG  float64 `json:"reservedKg"`
+	FreeKG      float64 `json:"freeKg"`
+}
+
 type Order struct {
 	ID          int       `json:"id"`
 	Name        string    `json:"name"`
@@ -220,6 +281,15 @@ type Order struct {
 	Description string    `json:"description"`
 	Payments    []Payment `json:"payments"` // JSON array of payment objects as string
 	Debt        float64   `json:"debt"`
+	ShipDate    string    `json:"ship_date"`
+	City        string    `json:"city"`
+	FullName    string    `json:"full_name"`
+	Phone       string    `json:"phone"`
+	PassportInn string    `json:"passport_inn"`
+	TK          string    `json:"tk"`
+	Places      int       `json:"places"`
+	Price       float64   `json:"price"`
+	Weight      float64   `json:"weight"`
 }
 
 type Client struct {
@@ -249,4 +319,10 @@ type ShipmentNote struct {
 	ID       int    `json:"id"`
 	ShipDate string `json:"ship_date"`
 	Note     string `json:"note"`
+}
+
+type CourierDailyPayment struct {
+	ShipDate string  `json:"ship_date"`
+	Amount   float64 `json:"amount"`
+	Comment  string  `json:"comment"`
 }

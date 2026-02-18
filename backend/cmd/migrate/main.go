@@ -207,9 +207,9 @@ func migrateArticles(src *sql.DB, dst *sql.Tx) (int, error) {
 			codeValue = strconv.FormatInt(code.Int64, 10)
 		}
 		if _, err := dst.Exec(`
-			INSERT INTO articles (id, code, description, euro, count, weight, price)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, id, codeValue, description, euro, count, weight, price); err != nil {
+			INSERT INTO articles (id, no, code, description, euro, colli, kg, value)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, id, count, codeValue, description, euro, 0, weight, price); err != nil {
 			return n, err
 		}
 		n++

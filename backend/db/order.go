@@ -15,6 +15,7 @@ import (
 func GetOrders(c *gin.Context) {
 	query := `
         SELECT o.id, o.name, o.quantity, o.status, o.description, o.debt,
+               o.ship_date, o.city, o.full_name, o.phone, o.passport_inn, o.tk, o.places, o.price, o.weight,
                p.id, p.status, p.name, p.video, p.weight, p.skidka, p.summaRubSoSkidkoj, p.count, p.onePrice, p.description,
                pm.id, pm.date, pm.method, pm.amount, pm.comment
         FROM orders o
@@ -38,6 +39,9 @@ func GetOrders(c *gin.Context) {
 		var p models.Product
 		var pm models.Payment
 		var debt sql.NullFloat64
+		var shipDate, city, fullName, phone, passportInn, tk sql.NullString
+		var places sql.NullInt64
+		var price, weight sql.NullFloat64
 		var productID, paymentID sql.NullInt64
 		var productStatus, productCount sql.NullInt64
 		var productName, productVideo, productWeight, productSkidka, productSummaRubSoSkidkoj, productOnePrice, productDescription sql.NullString
@@ -45,6 +49,7 @@ func GetOrders(c *gin.Context) {
 		var paymentAmount sql.NullFloat64
 		err := rows.Scan(
 			&o.ID, &o.Name, &o.Quantity, &o.Status, &o.Description, &debt,
+			&shipDate, &city, &fullName, &phone, &passportInn, &tk, &places, &price, &weight,
 			&productID, &productStatus, &productName, &productVideo, &productWeight, &productSkidka, &productSummaRubSoSkidkoj, &productCount, &productOnePrice, &productDescription,
 			&paymentID, &paymentDate, &paymentMethod, &paymentAmount, &paymentComment,
 		)
@@ -56,6 +61,33 @@ func GetOrders(c *gin.Context) {
 		if _, exists := ordersMap[o.ID]; !exists {
 			if debt.Valid {
 				o.Debt = debt.Float64
+			}
+			if shipDate.Valid {
+				o.ShipDate = shipDate.String
+			}
+			if city.Valid {
+				o.City = city.String
+			}
+			if fullName.Valid {
+				o.FullName = fullName.String
+			}
+			if phone.Valid {
+				o.Phone = phone.String
+			}
+			if passportInn.Valid {
+				o.PassportInn = passportInn.String
+			}
+			if tk.Valid {
+				o.TK = tk.String
+			}
+			if places.Valid {
+				o.Places = int(places.Int64)
+			}
+			if price.Valid {
+				o.Price = price.Float64
+			}
+			if weight.Valid {
+				o.Weight = weight.Float64
 			}
 			ordersMap[o.ID] = &o
 			componentsMaps[o.ID] = make(map[int]models.Product)
@@ -70,6 +102,9 @@ func GetOrders(c *gin.Context) {
 			}
 			if productVideo.Valid {
 				p.Video = productVideo.String
+			}
+			if productWeight.Valid {
+				p.Weight = productWeight.String
 			}
 			if productSkidka.Valid {
 				p.Skidka = productSkidka.String
@@ -86,7 +121,6 @@ func GetOrders(c *gin.Context) {
 			if productDescription.Valid {
 				p.Description = productDescription.String
 			}
-			_ = productWeight
 			componentsMaps[o.ID][p.ID] = p
 		}
 
@@ -291,6 +325,13 @@ func validateOrderProductSelection(tx *sql.Tx, orderID int, productIDs []int, ex
 	return nil
 }
 
+func productStatusForOrder(orderStatus int) int {
+	if orderStatus == 2 {
+		return 3
+	}
+	return 2
+}
+
 func CreateOrder(c *gin.Context) {
 	var order models.Order
 	if err := c.ShouldBindJSON(&order); err != nil {
@@ -333,7 +374,13 @@ func CreateOrder(c *gin.Context) {
 	}
 
 	var orderID int
-	err = tx.QueryRow("INSERT INTO orders (name, quantity, status, description, debt) VALUES ($1, 0, $2, $3, 0) RETURNING id", order.Name, order.Status, order.Description).Scan(&orderID)
+	err = tx.QueryRow(`
+		INSERT INTO orders (
+			name, quantity, status, description, debt, ship_date, city, full_name, phone, passport_inn, tk, places, price, weight
+		)
+		VALUES ($1, 0, $2, $3, 0, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id
+	`, order.Name, order.Status, order.Description, order.ShipDate, order.City, order.FullName, order.Phone, order.PassportInn, order.TK, order.Places, order.Price, order.Weight).Scan(&orderID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create order: " + err.Error()})
 		return
@@ -341,8 +388,9 @@ func CreateOrder(c *gin.Context) {
 
 	log.Printf("\nOrder components: %v\n", order.Components)
 
+	targetProductStatus := productStatusForOrder(order.Status)
 	for _, product := range order.Components {
-		_, err := tx.Exec("UPDATE products SET status = 2 WHERE id = $1", product.ID)
+		_, err := tx.Exec("UPDATE products SET status = $1 WHERE id = $2", targetProductStatus, product.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update product status: " + err.Error()})
 			return
@@ -433,6 +481,16 @@ func UpdateOrder(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
+	var oldOrderStatus int
+	if err := tx.QueryRow("SELECT status FROM orders WHERE id = $1", id).Scan(&oldOrderStatus); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Order not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch old order status: " + err.Error()})
+		return
+	}
+
 	var oldProductIDs []int
 	oldRows, err := tx.Query("SELECT product_id FROM order_products WHERE order_id = $1", id)
 	if err != nil {
@@ -479,6 +537,7 @@ func UpdateOrder(c *gin.Context) {
 		}
 	}
 
+	targetProductStatus := productStatusForOrder(order.Status)
 	for _, p := range order.Components {
 		isNew := true
 		for _, opid := range oldProductIDs {
@@ -488,9 +547,19 @@ func UpdateOrder(c *gin.Context) {
 			}
 		}
 		if isNew {
-			_, err := tx.Exec("UPDATE products SET status = 2 WHERE id = $1", p.ID)
+			_, err := tx.Exec("UPDATE products SET status = $1 WHERE id = $2", targetProductStatus, p.ID)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update product status: " + err.Error()})
+				return
+			}
+		}
+	}
+
+	if oldOrderStatus != 2 && order.Status == 2 {
+		for _, p := range order.Components {
+			_, err := tx.Exec("UPDATE products SET status = 3 WHERE id = $1", p.ID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to mark product as sold: " + err.Error()})
 				return
 			}
 		}
@@ -600,8 +669,13 @@ func UpdateOrder(c *gin.Context) {
 	order.Debt = totalOrderAmount - totalPaid(dbPayments)
 
 	_, err = tx.Exec(
-		"UPDATE orders SET name = $1, quantity = $2, status = $3, description = $4, debt = $5 WHERE id = $6",
-		order.Name, order.Quantity, order.Status, order.Description, order.Debt, id,
+		`UPDATE orders
+		SET name = $1, quantity = $2, status = $3, description = $4, debt = $5,
+			ship_date = $6, city = $7, full_name = $8, phone = $9, passport_inn = $10, tk = $11, places = $12, price = $13, weight = $14
+		WHERE id = $15`,
+		order.Name, order.Quantity, order.Status, order.Description, order.Debt,
+		order.ShipDate, order.City, order.FullName, order.Phone, order.PassportInn, order.TK, order.Places, order.Price, order.Weight,
+		id,
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update order: " + err.Error()})

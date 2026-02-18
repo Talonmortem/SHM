@@ -61,6 +61,26 @@ func CloseDB() {
 	}
 }
 
+func CreateDb() {
+	dsn := resolveDSN()
+	tempDB, err := sql.Open("pgx", dsn)
+	if err != nil {
+		log.Fatal("Failed to connect to database for creation:", err)
+	}
+	defer tempDB.Close()
+
+	_, err = tempDB.Exec("CREATE DATABASE shm")
+	if err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			log.Println("Database already exists, skipping creation.")
+		} else {
+			log.Fatal("Failed to create database:", err)
+		}
+	} else {
+		log.Println("Database created successfully.")
+	}
+}
+
 func CreateTables() {
 	CreateTablesArticles()
 	CreateTablesProducts()
@@ -75,7 +95,16 @@ func CreateTables() {
 			quantity INTEGER NOT NULL,
 			status INTEGER NOT NULL,
 			description TEXT,
-			debt DOUBLE PRECISION DEFAULT 0
+			debt DOUBLE PRECISION DEFAULT 0,
+			ship_date TEXT,
+			city TEXT,
+			full_name TEXT,
+			phone TEXT,
+			passport_inn TEXT,
+			tk TEXT,
+			places INTEGER,
+			price DOUBLE PRECISION,
+			weight DOUBLE PRECISION
 		);
 
 		CREATE TABLE IF NOT EXISTS order_products (
@@ -116,6 +145,16 @@ func CreateTables() {
 	log.Println("Tables created successfully!")
 
 	_, err = DB.Exec(`
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS ship_date TEXT;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS city TEXT;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS full_name TEXT;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS phone TEXT;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS passport_inn TEXT;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS tk TEXT;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS places INTEGER;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS price DOUBLE PRECISION;
+		ALTER TABLE orders ADD COLUMN IF NOT EXISTS weight DOUBLE PRECISION;
+
 		UPDATE payments_monitoring
 		SET date = date || ' 00:00:00'
 		WHERE date ~ '^\d{4}-\d{2}-\d{2}$';
@@ -181,6 +220,7 @@ func SeedTestData() {
 				{ID: 1, Article: 3246, CursEvro: "99", PriceEvro: "15.2", Weight: "27.7", Count: 19, SumEvro: "421.04", SumRub: "41653"}},
 			Skidka:            "15",
 			SummaRubSoSkidkoj: "41957",
+			Weight:            "55.40",
 			Count:             38,
 			OnePrice:          "1104",
 			Video:             "https://youtu.be/ccnjj9UjWZk",
@@ -193,6 +233,7 @@ func SeedTestData() {
 			ArticlesInProduct: []models.ArticleInProduct{{ID: 0, Article: 3246, CursEvro: "99", PriceEvro: "15.2", Weight: "31.9", Count: 49, SumEvro: "433.2", SumRub: "42887"}},
 			Skidka:            "30",
 			SummaRubSoSkidkoj: "38402",
+			Weight:            "31.90",
 			Count:             49,
 			OnePrice:          "784",
 			Video:             "https://youtu.be/CS2E-pxUxoA",
@@ -200,21 +241,74 @@ func SeedTestData() {
 		},
 	}
 
+	seedArticles := []models.Article{
+		{
+			ID:          3630,
+			No:          38,
+			Code:        "3630",
+			Description: "Ботинки",
+			Euro:        99,
+			Colli:       0,
+			KG:          27.7,
+			Value:       18,
+		},
+		{
+			ID:          3246,
+			No:          68,
+			Code:        "3246",
+			Description: "Обувь микс Весна",
+			Euro:        99,
+			Colli:       0,
+			KG:          31.9,
+			Value:       15.2,
+		},
+	}
+
+	for _, article := range seedArticles {
+		_, err := DB.Exec(`
+			INSERT INTO articles (id, no, code, description, euro, colli, kg, value)
+			SELECT $1, $2, $3, $4, $5, $6, $7, $8
+			WHERE NOT EXISTS (
+				SELECT 1 FROM articles
+				WHERE id = $1 AND code = $3
+			)
+		`, article.ID, article.No, article.Code, article.Description, article.Euro, article.Colli, article.KG, article.Value)
+		if err != nil {
+			log.Fatal("Failed to seed articles:", err)
+		}
+	}
+
 	for _, p := range products {
-		_, err = DB.Exec(`
-			INSERT INTO products (id, status, name, skidka, summaRubSoSkidkoj, count, oneprice, video, description)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		result, err := DB.Exec(`
+			INSERT INTO products (id, status, name, weight, skidka, summaRubSoSkidkoj, count, oneprice, video, description)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			ON CONFLICT (id) DO NOTHING
-		`, p.ID, p.Status, p.Name, p.Skidka, p.SummaRubSoSkidkoj, p.Count, p.OnePrice, p.Video, p.Description)
+		`, p.ID, p.Status, p.Name, p.Weight, p.Skidka, p.SummaRubSoSkidkoj, p.Count, p.OnePrice, p.Video, p.Description)
 		if err != nil {
 			log.Fatal("Failed to insert product for seeding products:", err)
 		}
+		affected, err := result.RowsAffected()
+		if err == nil && affected == 0 {
+			continue
+		}
 
 		for _, article := range p.ArticlesInProduct {
-			_, err := DB.Exec(`
-				INSERT INTO article_in_product (product_id, article, cursEvro, priceEvro, weight, count, sumEvro, sumRub)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			`, p.ID, article.Article, article.CursEvro, article.PriceEvro, article.Weight, article.Count, article.SumEvro, article.SumRub)
+			var serviceID int
+			err = DB.QueryRow(`
+					SELECT service_id
+					FROM articles
+					WHERE id = $1
+					ORDER BY service_id
+					LIMIT 1
+				`, article.Article).Scan(&serviceID)
+			if err != nil {
+				log.Fatalf("Failed to resolve service_id for article id %d: %v", article.Article, err)
+			}
+
+			_, err = DB.Exec(`
+					INSERT INTO article_in_product (product_id, article, cursEvro, priceEvro, weight, count, sumEvro, sumRub)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+				`, p.ID, serviceID, article.CursEvro, article.PriceEvro, article.Weight, article.Count, article.SumEvro, article.SumRub)
 			if err != nil {
 				log.Fatal("Failed to insert article for seeding products:", err)
 			}

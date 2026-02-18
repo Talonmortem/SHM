@@ -68,6 +68,47 @@ func CreateTablesProducts() {
 		ALTER TABLE article_in_product
 		ADD COLUMN IF NOT EXISTS count INTEGER NOT NULL DEFAULT 0;
 
+		ALTER TABLE article_in_product
+		ALTER COLUMN article TYPE BIGINT USING article::BIGINT;
+
+		UPDATE article_in_product aip
+		SET article = a.service_id
+		FROM articles a
+		WHERE aip.article = a.id
+			AND NOT EXISTS (
+				SELECT 1 FROM articles ax WHERE ax.service_id = aip.article
+			);
+
+		UPDATE article_in_product aip
+		SET article = mapped.service_id
+		FROM (
+			SELECT code, MIN(service_id) AS service_id
+			FROM articles
+			GROUP BY code
+		) mapped
+		WHERE aip.article::TEXT = mapped.code
+			AND NOT EXISTS (
+				SELECT 1 FROM articles ax WHERE ax.service_id = aip.article
+			);
+
+		ALTER TABLE article_in_product
+		DROP CONSTRAINT IF EXISTS fk_article_in_product_article_id;
+
+		DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'fk_article_in_product_article_id'
+			) THEN
+				ALTER TABLE article_in_product
+				ADD CONSTRAINT fk_article_in_product_article_id
+				FOREIGN KEY (article) REFERENCES articles(service_id)
+				ON UPDATE CASCADE
+				ON DELETE RESTRICT
+				NOT VALID;
+			END IF;
+		END $$;
+
 		SELECT setval(
 			pg_get_serial_sequence('products', 'id'),
 			GREATEST((SELECT COALESCE(MAX(id), 0) FROM products), 5999),
@@ -108,11 +149,11 @@ func parseNumericInput(raw string) float64 {
 
 func calculateProductFields(p *models.Product) {
 	var totalSumRub float64
-	totalCount := 0
+	totalWeight := 0.0
 
 	for _, a := range p.ArticlesInProduct {
 		totalSumRub += parseNumericInput(a.SumRub)
-		totalCount += a.Count
+		totalWeight += parseNumericInput(a.Weight)
 	}
 
 	skidkaPercent := parseNumericInput(p.Skidka)
@@ -125,11 +166,11 @@ func calculateProductFields(p *models.Product) {
 
 	discountedSum := totalSumRub * (1 - skidkaPercent/100)
 	p.SummaRubSoSkidkoj = strconv.FormatFloat(discountedSum, 'f', 2, 64)
-	p.Count = totalCount
+	p.Weight = strconv.FormatFloat(totalWeight, 'f', 2, 64)
 
 	onePrice := 0.0
-	if p.Count > 0 {
-		onePrice = discountedSum / float64(p.Count)
+	if totalWeight != 0 {
+		onePrice = discountedSum / totalWeight
 	}
 	p.OnePrice = strconv.FormatFloat(onePrice, 'f', 2, 64)
 }
@@ -143,40 +184,34 @@ func validateAndPrepareProduct(product *models.Product) error {
 		if product.ArticlesInProduct[i].Article <= 0 {
 			return newBadRequestError("Article code is required in Articles in Product")
 		}
-		if product.ArticlesInProduct[i].Count <= 0 {
-			return newBadRequestError(fmt.Sprintf("Count for article %d must be greater than 0", product.ArticlesInProduct[i].Article))
-		}
 		calculateArticleFields(&product.ArticlesInProduct[i])
 	}
 
 	return nil
 }
 
-func collectArticleCounts(articlesInProduct []models.ArticleInProduct) map[int]int {
-	counts := make(map[int]int)
+func collectArticleWeights(articlesInProduct []models.ArticleInProduct) map[int]float64 {
+	weights := make(map[int]float64)
 	for _, a := range articlesInProduct {
-		if a.Article <= 0 || a.Count <= 0 {
+		if a.Article <= 0 {
 			continue
 		}
-		counts[a.Article] += a.Count
+		weights[a.Article] += parseNumericInput(a.Weight)
 	}
-	return counts
+	return weights
 }
 
-func reserveArticleStock(tx *sql.Tx, requestedCounts map[int]int) error {
-	for articleCode, requested := range requestedCounts {
-		var available int
-		err := tx.QueryRow("SELECT count FROM articles WHERE code::integer = $1 FOR UPDATE", articleCode).Scan(&available)
+func reserveArticleStock(tx *sql.Tx, requestedWeights map[int]float64) error {
+	for articleServiceID, requested := range requestedWeights {
+		var existingKG float64
+		err := tx.QueryRow("SELECT COALESCE(kg, 0) FROM articles WHERE service_id = $1 FOR UPDATE", articleServiceID).Scan(&existingKG)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return newBadRequestError(fmt.Sprintf("Article %d does not exist", articleCode))
+				return newBadRequestError(fmt.Sprintf("Article %d does not exist", articleServiceID))
 			}
 			return err
 		}
-		if available < requested {
-			return newBadRequestError(fmt.Sprintf("Not enough stock for article %d: available %d, requested %d", articleCode, available, requested))
-		}
-		if _, err := tx.Exec("UPDATE articles SET count = count - $1 WHERE code::integer = $2", requested, articleCode); err != nil {
+		if _, err := tx.Exec("UPDATE articles SET kg = COALESCE(kg, 0) - $1 WHERE service_id = $2", requested, articleServiceID); err != nil {
 			return err
 		}
 	}
@@ -184,13 +219,13 @@ func reserveArticleStock(tx *sql.Tx, requestedCounts map[int]int) error {
 	return nil
 }
 
-func releaseArticleStock(tx *sql.Tx, releasedCounts map[int]int) error {
-	for articleCode, released := range releasedCounts {
-		if released <= 0 {
+func releaseArticleStock(tx *sql.Tx, releasedWeights map[int]float64) error {
+	for articleServiceID, released := range releasedWeights {
+		if released == 0 {
 			continue
 		}
 
-		result, err := tx.Exec("UPDATE articles SET count = count + $1 WHERE code::integer = $2", released, articleCode)
+		result, err := tx.Exec("UPDATE articles SET kg = COALESCE(kg, 0) + $1 WHERE service_id = $2", released, articleServiceID)
 		if err != nil {
 			return err
 		}
@@ -200,34 +235,34 @@ func releaseArticleStock(tx *sql.Tx, releasedCounts map[int]int) error {
 			return err
 		}
 		if affected == 0 {
-			return fmt.Errorf("article %d not found while restoring stock", articleCode)
+			return fmt.Errorf("article %d not found while restoring stock", articleServiceID)
 		}
 	}
 
 	return nil
 }
 
-func getReservedArticleCountsByProductID(tx *sql.Tx, productID int) (map[int]int, error) {
-	rows, err := tx.Query("SELECT article, count FROM article_in_product WHERE product_id = $1", productID)
+func getReservedArticleWeightsByProductID(tx *sql.Tx, productID int) (map[int]float64, error) {
+	rows, err := tx.Query("SELECT article, weight FROM article_in_product WHERE product_id = $1", productID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	counts := make(map[int]int)
+	weights := make(map[int]float64)
 	for rows.Next() {
 		var articleCode int
-		var count int
-		if err := rows.Scan(&articleCode, &count); err != nil {
+		var weightRaw string
+		if err := rows.Scan(&articleCode, &weightRaw); err != nil {
 			return nil, err
 		}
-		if articleCode <= 0 || count <= 0 {
+		if articleCode <= 0 {
 			continue
 		}
-		counts[articleCode] += count
+		weights[articleCode] += parseNumericInput(weightRaw)
 	}
 
-	return counts, rows.Err()
+	return weights, rows.Err()
 }
 
 func insertProductArticles(tx *sql.Tx, productID int, articlesInProduct []models.ArticleInProduct) error {
@@ -252,7 +287,7 @@ func insertProductArticles(tx *sql.Tx, productID int, articlesInProduct []models
 }
 
 func GetProducts(c *gin.Context) {
-	rows, err := DB.Query("SELECT id, status, name, skidka, summaRubSoSkidkoj, count, onePrice, video, description FROM products")
+	rows, err := DB.Query("SELECT id, status, name, weight, skidka, summaRubSoSkidkoj, count, onePrice, video, description FROM products")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "articles": "Make sure articles exist in articles table"})
 		return
@@ -266,6 +301,7 @@ func GetProducts(c *gin.Context) {
 			&product.ID,
 			&product.Status,
 			&product.Name,
+			&product.Weight,
 			&product.Skidka,
 			&product.SummaRubSoSkidkoj,
 			&product.Count,
@@ -318,8 +354,8 @@ func CreateProduct(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
-	requestedCounts := collectArticleCounts(product.ArticlesInProduct)
-	if err := reserveArticleStock(tx, requestedCounts); err != nil {
+	requestedWeights := collectArticleWeights(product.ArticlesInProduct)
+	if err := reserveArticleStock(tx, requestedWeights); err != nil {
 		writeProductError(c, err)
 		return
 	}
@@ -327,9 +363,10 @@ func CreateProduct(c *gin.Context) {
 	calculateProductFields(&product)
 
 	err = tx.QueryRow(
-		"INSERT INTO products (status, name, skidka, summaRubSoSkidkoj, count, onePrice, video, description) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+		"INSERT INTO products (status, name, weight, skidka, summaRubSoSkidkoj, count, onePrice, video, description) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
 		product.Status,
 		product.Name,
+		product.Weight,
 		product.Skidka,
 		product.SummaRubSoSkidkoj,
 		product.Count,
@@ -382,7 +419,7 @@ func UpdateProduct(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
-	oldCounts, err := getReservedArticleCountsByProductID(tx, id)
+	oldCounts, err := getReservedArticleWeightsByProductID(tx, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -393,7 +430,7 @@ func UpdateProduct(c *gin.Context) {
 		return
 	}
 
-	newCounts := collectArticleCounts(product.ArticlesInProduct)
+	newCounts := collectArticleWeights(product.ArticlesInProduct)
 	if err := reserveArticleStock(tx, newCounts); err != nil {
 		writeProductError(c, err)
 		return
@@ -402,9 +439,10 @@ func UpdateProduct(c *gin.Context) {
 	calculateProductFields(&product)
 
 	result, err := tx.Exec(
-		"UPDATE products SET status = $1, name = $2, skidka = $3, summaRubSoSkidkoj = $4, count = $5, onePrice = $6, video = $7, description = $8 WHERE id = $9",
+		"UPDATE products SET status = $1, name = $2, weight = $3, skidka = $4, summaRubSoSkidkoj = $5, count = $6, onePrice = $7, video = $8, description = $9 WHERE id = $10",
 		product.Status,
 		product.Name,
+		product.Weight,
 		product.Skidka,
 		product.SummaRubSoSkidkoj,
 		product.Count,
@@ -496,7 +534,7 @@ func DeleteProduct(c *gin.Context) {
 	}
 	defer tx.Rollback()
 
-	oldCounts, err := getReservedArticleCountsByProductID(tx, id)
+	oldCounts, err := getReservedArticleWeightsByProductID(tx, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
